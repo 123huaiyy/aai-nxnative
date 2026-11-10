@@ -7,7 +7,20 @@ import os
 import sys
 
 if os.name == 'nt':
+    import builtins
+    import io
     import threading
+
+    # Text written by the tools keeps '\n' line endings, as on the Mac (Windows' text mode would write CR LF into every table, JSON and MSL file
+    # they make, and the iOS host splits its tables on '\n'). Reading keeps universal newlines.
+    _io_open = io.open
+
+    def _lf_open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None):
+        if newline is None and 'b' not in mode and any(c in mode for c in 'wax+'):
+            newline = '\n'
+        return _io_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+    builtins.open = io.open = _lf_open
 
     _open, _lock = os.open, threading.Lock()
 

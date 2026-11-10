@@ -45,6 +45,9 @@ jobs:
           echo "SPIRV-Cross $TAG ($COMMIT)"
           git clone --quiet --depth 1 --branch "$TAG" https://github.com/KhronosGroup/SPIRV-Cross.git sc
           test "$(git -C sc rev-parse HEAD)" = "$COMMIT"
+          # --output files in binary mode, so the MSL keeps LF line endings as on the Mac (Windows' text mode would write CR LF); nothing else changes
+          sed -i 's/fopen(path, "w");/fopen(path, "wb");/' sc/main.cpp
+          grep -n 'fopen(path, "wb");' sc/main.cpp
           cmake -S sc -B scb -DSPIRV_CROSS_ENABLE_TESTS=OFF -DSPIRV_CROSS_SKIP_INSTALL=ON \
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build scb --config Release --target spirv-cross -j 4
