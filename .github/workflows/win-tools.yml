@@ -19,6 +19,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
+      - name: Keep line endings as committed   # the translator embeds its sources (--source-sha) and every source must be byte-identical to the Mac build's
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: seedds/nxnative
