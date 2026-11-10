@@ -242,6 +242,7 @@ def main():
     ap.add_argument('--version', default='')
     ap.add_argument('--package', default='')
     ap.add_argument('--print-layout', action='store_true', help='print the layout JSON CI needs (numbers only) and stop')
+    ap.add_argument('--test', action='store_true', help='a trial pack: tables the shader build makes may be missing')
     a = ap.parse_args()
 
     sys.path.insert(0, str(a.nxnative / 'dm/games'))
@@ -276,6 +277,9 @@ def main():
     if (a.patched / 'nro.tsv').exists():
         shutil.copyfile(a.patched / 'nro.tsv', td / 'nro.tsv')
     for t in ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv'):
+        if not (a.profile / t).exists() and a.test:
+            print(f'  [test] no {t} yet')
+            continue
         shutil.copyfile(a.profile / t, td / t)
     for t in ('cb_extent.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv'):
         if (a.profile / t).exists():
@@ -314,8 +318,8 @@ def main():
     if a.icons and a.icons.is_dir():
         for p in a.icons.glob('*.png'):
             shutil.copyfile(p, app / p.name)
-        info['CFBundleIcons'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60'], 'CFBundleIconName': 'AppIcon'}}
-        info['CFBundleIcons~ipad'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60', 'AppIcon76x76', 'AppIcon83.5x83.5'], 'CFBundleIconName': 'AppIcon'}}
+        info['CFBundleIcons'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60']}}   # loose PNGs (no asset catalog in the shell)
+        info['CFBundleIcons~ipad'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60', 'AppIcon76x76', 'AppIcon83.5x83.5']}}
     data = plistlib.dumps(info, fmt=plistlib.FMT_BINARY)
     info_path.write_bytes(data)
     print(f'app: {name} {info.get("CFBundleShortVersionString")} ({info.get("CFBundleIdentifier")}), language {lang}')

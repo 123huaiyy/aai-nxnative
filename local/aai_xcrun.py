@@ -39,10 +39,7 @@ def translate(args):
     tool, rest = a[0], a[1:]
     if tool not in cfg:
         raise FileNotFoundError(f'aai_xcrun: no {tool} configured for SDK {sdk}')
-    extra = cfg.get(f'{tool}_args', [])
-    if tool == 'metal' and rest[:1] == ['--version']:
-        extra = []
-    return [cfg[tool], *extra, *rest]
+    return [cfg[tool], *cfg.get(f'{tool}_args', []), *rest]
 
 
 class Popen(_Popen):
