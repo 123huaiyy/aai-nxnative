@@ -8,16 +8,17 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  //   The menu button stays while a physical controller is connected, so the menu is there in every layout and with every controller.
  //   Tap (touch): no control but the menu button, every other touch goes to the game's local touch viewport; offered only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
  //   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
-@@ -7,6 +7,8 @@
+@@ -7,6 +7,9 @@
  //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick that is not drawn
  //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
  //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
-+//   Game style: the same controls, laid out as the game's own screen furniture rather than as a pad. A wand ring in the bottom-left corner is the left stick; a large spell seal in the bottom-right is ZR, the action a game like Hogwarts Legacy casts with; a shield inward of it is ZL; A / B / X / Y sit on an arc over the seal, which is where the thumb already is. No D-pad and no L3 / R3 (the 3D layout has those), and the right half of the screen is the right stick. Keys are gold on dark instead of white on nothing.
++//   Game style: the same controls, laid out as the game's own screen furniture rather than as a pad. A wand ring in the bottom-left corner is the left stick; a large spell seal in the bottom-right is ZR, the action a game like Hogwarts Legacy casts with; a shield inward of it is ZL; A / B / X / Y sit on an arc over the seal, which is where the thumb already is; a potion wheel above the wand ring is the D-pad (four slots on a rim, the game's tool slots: a slide round the rim picks one, and a slot is never two at once); L / R are high on each side.
++//     Every key carries a drawn icon of what it does and, under it in small type, the button it stands for: a wand (cast), a ward (Protego), two chevrons (dodge), a chevron over the ground (jump), a burst (Ancient Magic), a raised hand (interact), a rim with the spell in it (the spell set wheel), a circle round (the next set), three lines (the pause menu), a folded map (the field guide) and a flask in each of the potion wheel's slots. The wand ring, the one control that needs no telling, carries neither. Icons are strokes, not images: sharp at every scale, no asset. No L3 / R3 (the 3D layout has those), and the right half of the screen is the right stick. Keys are gold on dark instead of white on nothing.
 +//   Hidden: nothing but the menu button, dimmed to a quarter, for a player with a controller on who wants a clean screen. No control takes a touch then: every one goes to the game's touch screen.
  //   Touch-down ownership: the menu button where it is nearer than a locked key (a view of its own, DmMenuButton), locked keys next (shoulders, − / +, L3 / R3), then whichever of the diamond, the D-pad and the left stick has the smallest distance / grab radius (the left stick's grab circle borders the D-pad),
  //     then in 3D the right stick for a touch in the right third.
  //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
-@@ -128,7 +130,18 @@
+@@ -128,7 +131,23 @@
      K_DPAD_GRAB = 1.3,                              // D-pad grab radius (times the outer edge)
      K_RSTICK_R = 60,                                // right stick (not drawn): radius around its centre, the touch-down point
      K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
@@ -28,16 +29,28 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +    K_STYLE_MOVE_R = 78, K_STYLE_KNOB_R = 27,
 +    K_STYLE_CAST_X = 128, K_STYLE_CAST_Y = 116,     // spell seal (ZR, the main action): centre from the right and the bottom, radius
 +    K_STYLE_CAST_R = 58,
-+    K_STYLE_GUARD_DX = 138, K_STYLE_GUARD_DY = 6,   // shield (ZL): inward of the seal and level with it, radius
++    K_STYLE_GUARD_DX = 150, K_STYLE_GUARD_DY = 6,   // shield (ZL): inward of the seal and level with it, radius
 +    K_STYLE_GUARD_R = 42,
 +    K_STYLE_ARC_R = 108, K_STYLE_ARC_STEP = 0.646,  // A / B / X / Y: this far from the seal's centre, the arc's keys this many radians apart
 +    K_STYLE_FACE_R = 26,
++    K_STYLE_DOSE_X = 118, K_STYLE_DOSE_Y = 268,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
++    K_STYLE_DOSE_R = 50, K_STYLE_DOSE_KEY_R = 18,   // the rim its slots sit on, a slot's radius
++    K_STYLE_DOSE_GRAB = 1.15,                       // how near the wheel's centre a touch-down takes it (times the rim's radius)
++    K_STYLE_PILL_W = 62, K_STYLE_PILL_H = 30,       // − / +: wider than the pad layouts' pair, room for the icon beside the sign
++    K_STYLE_PILL_DX = 56,                           // and that much further out, clear of the menu button between them
 +    K_STYLE_SIDE_X = 74, K_STYLE_SIDE_Y = 44,       // L / R: high on each side, radius
 +    K_STYLE_SIDE_R = 22;
  static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
  static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
  int dm_opmode(void);   // hle_oe.c: 0 = handheld
-@@ -159,14 +172,16 @@
+@@ -153,20 +172,22 @@
+     CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
+     uint64_t _faceBits, _dpadBits, _btnBits;
+     NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
+-    CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one layer per key
++    CAShapeLayer *_key[B_N], *_ico[B_N]; CATextLayer *_label[B_N];   // one layer per key: its shape, the icon of what it does, its caption
+     CAShapeLayer *_ring, *_knob;                   // the left stick (the right one is not drawn)
+     DmMenuButton *_menu;                           // opens the in-game menu (GameMenu.swift)
      UIImpactFeedbackGenerator *_touchFeedback;       // one short feedback per touch-control press edge
      unsigned _hapticSticks;
      BOOL _stickShown;                              // the left stick was held at the last refresh
@@ -45,7 +58,7 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +    BOOL _full, _tap, _style, _hidden;             // the 3D / Tap / Game style / Hidden layout is current
      CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
      BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
-+    CALayer *_deco; CAShapeLayer *_decoTicks, *_decoSeal;   // the Game style layout's engraving: the wand ring's ticks, the spell seal's outer arcs
++    CALayer *_deco; CAShapeLayer *_decoTicks, *_decoSeal, *_decoDose;   // the Game style layout's engraving: the wand ring's ticks, the spell seal's outer arcs, the potion wheel's rim
      DmLayout _layout;
      UITouch *_game[16];                            // touches on the game's touch screen by finger slot
  }
@@ -55,15 +68,15 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  static CAShapeLayer *shape(CALayer *parent) {
      CAShapeLayer *l = [CAShapeLayer layer];
      l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
-@@ -179,6 +194,7 @@
+@@ -179,6 +200,7 @@
      [parent addSublayer:t]; return t;
  }
  static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
-+static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_ZR) || b == B_PLUS || b == B_MINUS; }   // the Game style layout's keys: no D-pad, no L3 / R3
++static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_DOWN); }   // the Game style layout's keys: A / B / X / Y, the shoulders and triggers, − / +, the potion wheel (no L3 / R3)
  
  - (instancetype)initWithFrame:(CGRect)f {
      if ((self = [super initWithFrame:f])) {
-@@ -198,8 +214,14 @@
+@@ -198,16 +220,25 @@
              // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
              k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
              k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
@@ -75,10 +88,23 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +        _deco = [CALayer layer]; [_controls addSublayer:_deco];
 +        _decoTicks = shape(_deco); _decoTicks.fillColor = nil; _decoTicks.lineWidth = 2.5; _decoTicks.lineCap = kCALineCapRound; _decoTicks.shadowOpacity = 0;
 +        _decoSeal = shape(_deco); _decoSeal.fillColor = nil; _decoSeal.lineWidth = 2.5; _decoSeal.lineCap = kCALineCapRound; _decoSeal.shadowOpacity = 0;
++        _decoDose = shape(_deco); _decoDose.fillColor = nil; _decoDose.lineWidth = 2; _decoDose.lineCap = kCALineCapRound; _decoDose.shadowOpacity = 0;
          _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
          _knob = shape(_controls);
          CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
-@@ -220,7 +242,7 @@
+         [_knob addSublayer:in];
+-        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−"};
++        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"◀", @"▲", @"▶", @"▼"};   // the potion wheel's four slots: the caption is the direction, as on the D-pad
+         for (int b = 0; b < B_N; b++) {
+             _key[b] = shape(_controls);
+-            if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
++            if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label; the potion wheel's slots do
++            _ico[b] = shape(_key[b]);   // what the key does, drawn inside it
++            _ico[b].fillColor = nil; _ico[b].lineCap = kCALineCapRound; _ico[b].lineJoin = kCALineJoinRound; _ico[b].shadowOpacity = 0;
+         }
+         _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
+         _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
+@@ -220,7 +251,7 @@
          NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
          int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
          if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
@@ -87,12 +113,14 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
          [self applyLayout];
          NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
          [nc addObserver:self selector:@selector(padsChanged:) name:GCControllerDidConnectNotification object:nil];
-@@ -234,15 +256,18 @@
+@@ -234,15 +265,20 @@
  }
  - (void)applyLayout {   // show / hide the controls for the current layout
      [CATransaction begin]; [CATransaction setDisableActions:YES];
 -    for (int b = 0; b < B_N; b++) _key[b].hidden = _tap || (fullOnly(b) && !_full);
-+    for (int b = 0; b < B_N; b++) _key[b].hidden = _tap || (_style ? !styleKey(b) : (fullOnly(b) && !_full));
++    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (_style ? !styleKey(b) : (fullOnly(b) && !_full));
++        _ico[b].hidden = !_style;                        // the icons are the Game style layout's alone
++        if (b >= B_LEFT) _label[b].hidden = !_style; }   // the D-pad arms carry no caption; the potion wheel's slots do
      _ring.hidden = _knob.hidden = _tap;
 +    _deco.hidden = !_style;
      [CATransaction commit];
@@ -109,7 +137,7 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
      [self applyLayout]; [self setNeedsLayout];
  }
-@@ -279,9 +304,17 @@
+@@ -279,9 +315,17 @@
  - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
  - (CGFloat)faceR { return K_FACE_R * self.u; }
  - (CGFloat)faceHitR { return MAX(self.faceR * 1.25, _layout.separated ? 22 : 0); }
@@ -128,7 +156,7 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      if (self.portraitControls) {
          CGPoint p = [self portraitThumbCenter:NO];
          if (_full) p.x -= self.dpadR + 6 * self.u;
-@@ -291,8 +324,8 @@
+@@ -291,9 +335,10 @@
      return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u);
  }
  - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
@@ -137,10 +165,16 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +- (CGFloat)stickR:(int)i { if (i) return K_RSTICK_R * self.u; return (_style ? K_STYLE_MOVE_R : K_STICK_R) * self.u; }
 +- (BOOL)inRightArea:(CGPoint)p { CGRect b = _layout.controls; return p.x >= CGRectGetMaxX(b) - b.size.width * (_style ? 0.5 : K_RSWIPE); }
  - (CGPoint)dpadCenter {
++    if (_style) { CGRect s = self.corner; return CGPointMake(CGRectGetMinX(s) + K_STYLE_DOSE_X * self.u, CGRectGetMaxY(s) - K_STYLE_DOSE_Y * self.u); }   // the potion wheel: up the left side from the wand ring
      if (self.portraitControls) {
          CGPoint p = [self portraitThumbCenter:NO];
-@@ -305,10 +338,17 @@
- - (CGFloat)dpadR { return K_DPAD_R * self.u; }
+         p.x += [self stickR:0] + 6 * self.u;
+@@ -302,17 +347,26 @@
+     CGRect s = self.corner; CGFloat u = self.u;
+     return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u);
+ }
+-- (CGFloat)dpadR { return K_DPAD_R * self.u; }
++- (CGFloat)dpadR { return (_style ? K_STYLE_DOSE_R : K_DPAD_R) * self.u; }
  static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
  static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 -- (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
@@ -158,8 +192,16 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +- (CGFloat)dropR:(int)b { if (_style) return (b == B_ZR ? K_STYLE_CAST_R : b == B_ZL ? K_STYLE_GUARD_R : K_STYLE_SIDE_R) * self.u; return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
  - (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; CGFloat edge = _layout.separated ? 22 : 0;
      return side(s, b == B_RS, MAX(K_CLICK_X * u, edge), CGRectGetMinY(s) + MAX(K_ZL_Y * u, edge)); }
- - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
-@@ -328,6 +368,10 @@
+-- (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
+-    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + MAX(K_PILL_Y * u, _layout.separated ? 14 : 0));   // − on the left, + on the right
++- (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u;
++    CGFloat w = (_style ? K_STYLE_PILL_W : K_PILL_W) * u, h = (_style ? K_STYLE_PILL_H : K_PILL_H) * u;
++    CGFloat dx = (_style ? K_STYLE_PILL_DX : K_PILL_DX) * u;
++    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? dx : -dx), CGRectGetMinY(s) + MAX(K_PILL_Y * u, _layout.separated ? 14 : 0));   // − on the left, + on the right
+     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+ - (CGPoint)menuCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(K_PILL_Y * self.u, _layout.separated ? 14 : 0)); }
+ 
+@@ -328,6 +382,10 @@
  }
  - (int)btnAt:(CGPoint)p {   // Locked at touch-down; nearest normalized target wins overlapping separated-layout hits.
      int best = -1; CGFloat distance = 1;
@@ -170,7 +212,7 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
          if (fullOnly(b) && !_full) continue;
          CGFloat d = [self buttonDistance:b point:p];
-@@ -341,7 +385,7 @@
+@@ -341,7 +399,7 @@
  - (CGFloat)menuDistance:(CGPoint)p { return dist(p, self.menuCenter) / MAX(K_MENU_R * self.u * 1.6, 22); }
  - (BOOL)menuTakes:(CGPoint)p {   // the menu button takes a touch in its hit circle unless a locked key's target is nearer (the drawn keys are hidden in Tap and with a controller)
      CGFloat d = [self menuDistance:p]; if (d > 1) return NO;
@@ -179,15 +221,33 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      int hit = [self btnAt:p];
      return hit < 0 || d < [self buttonDistance:hit point:p];
  }
-@@ -420,6 +464,7 @@
+@@ -350,10 +408,15 @@
+     for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
+     return m;
+ }
+-- (uint64_t)dpadAt:(CGPoint)p {   // 8 directions: 45° each, diagonals press two keys; a small centre circle counts as none
++- (uint64_t)dpadAt:(CGPoint)p {   // 8 directions: 45° each, diagonals press two keys; a small centre circle counts as none (4 of them on the potion wheel)
+     CGPoint c = self.dpadCenter; CGFloat dx = p.x - c.x, dy = p.y - c.y;
+     if (hypot(dx, dy) < self.dpadR * 0.25) return 0;
+     double a = atan2(-dy, dx) * 180 / M_PI; uint64_t m = 0;
++    if (_style) {   // the potion wheel has four slots, so a quarter of it each and never two at once (a tool slot is a single)
++        if (a >= 45 && a < 135) return 1ull << B_UP;
++        if (a < -45 && a >= -135) return 1ull << B_DOWN;
++        return 1ull << (a >= 135 || a < -135 ? B_LEFT : B_RIGHT);
++    }
+     if (a > -67.5 && a < 67.5) m |= 1ull << B_RIGHT;
+     if (a > 22.5 && a < 157.5) m |= 1ull << B_UP;
+     if (a > 112.5 || a < -112.5) m |= 1ull << B_LEFT;
+@@ -420,6 +483,8 @@
      if (_padOff || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return NO;
      if (_tap) return NO;
      if ([self btnAt:p] >= 0) return YES;
-+    if (_style) return dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) <= 1 || (!_stick[1] && [self inRightArea:p]);
++    if (_style) return dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) <= 1
++        || dist(p, self.dpadCenter) / MAX(self.dpadR * K_STYLE_DOSE_GRAB, _layout.separated ? 22 : 0) <= 1 || (!_stick[1] && [self inRightArea:p]);
      if (dist(p, self.faceCenter) / (self.faceGap + MAX(self.faceR * 1.6, self.faceHitR)) <= 1) return YES;
      if (_full && dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, _layout.separated ? 22 : 0) < 1) return YES;
      if (!_stick[0] && dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) < 1) return YES;
-@@ -432,7 +477,7 @@
+@@ -432,7 +497,7 @@
  - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
      BOOL game = NO;
      for (UITouch *t in ts) {
@@ -196,20 +256,21 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
          CGPoint p = [t locationInView:self];
          if (_layout.separated && !CGRectContainsPoint(_layout.controls, p)) { game |= [self gameBegin:t]; continue; }
          int hit = _tap ? -1 : [self btnAt:p];   // the menu button took its own touches (menuTakes)
-@@ -440,10 +485,10 @@
+@@ -440,10 +505,10 @@
          if (_tap) { game |= [self gameBegin:t]; continue; }
          // diamond, D-pad, left stick: take the one with the smallest distance / grab radius, if it is <= 1
          CGFloat best = 1; int kind = C_NONE, idx = 0;
 -        CGFloat f = dist(p, self.faceCenter) / (self.faceGap + MAX(self.faceR * 1.6, self.faceHitR)); if (f <= best) { best = f; kind = C_FACE; }
+-        if (_full) { CGFloat d = dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, _layout.separated ? 22 : 0); if (d < best) { best = d; kind = C_DPAD; } }
 +        if (!_style) { CGFloat f = dist(p, self.faceCenter) / (self.faceGap + MAX(self.faceR * 1.6, self.faceHitR)); if (f <= best) { best = f; kind = C_FACE; } }
-         if (_full) { CGFloat d = dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, _layout.separated ? 22 : 0); if (d < best) { best = d; kind = C_DPAD; } }
++        if (_full || _style) { CGFloat d = dist(p, self.dpadCenter) / MAX(self.dpadR * (_style ? K_STYLE_DOSE_GRAB : K_DPAD_GRAB), _layout.separated ? 22 : 0); if (d < best) { best = d; kind = C_DPAD; } }   // the wheel is the D-pad here
          if (!_stick[0]) { CGFloat s = dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0); if (s < best) { best = s; kind = C_STICK; } }
 -        if (kind == C_NONE && _full && !_stick[1] && [self inRightArea:p]) { kind = C_STICK; idx = 1; _rCentre = p; }   // the right stick: centred where the touch lands
 +        if (kind == C_NONE && (_full || _style) && !_stick[1] && [self inRightArea:p]) { kind = C_STICK; idx = 1; _rCentre = p; }   // the right stick: centred where the touch lands
          if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
          else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
          else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
-@@ -481,6 +526,33 @@
+@@ -481,6 +546,33 @@
  
  // ---- Shapes ----
  static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -243,7 +304,146 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round) {   // teardrop: circle + two tangents meeting at the tip, tip slightly rounded
      CGFloat d = r * K_DROP_TIP, th = acos(r / d);
      CGPoint tip = CGPointMake(c.x + d * cos(tipAngle), c.y + d * sin(tipAngle));
-@@ -518,10 +590,16 @@
+@@ -500,6 +592,110 @@
+     for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
+     CGPathCloseSubpath(p); return p;
+ }
++// The Game style layout's icons: each key drawn as what it does, in strokes (no asset, sharp at any scale), with the button it
++// stands for in small type under it. A game's own verbs: cast, ward, dodge, jump, Ancient Magic, interact, the spell set wheel, the
++// next set, the pause menu, the field guide, and a flask for each of the potion wheel's tool slots.
++static CGPathRef iconWand(CGPoint c, CGFloat r) {   // Basic Cast: a wand, its tip sparkling
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathMoveToPoint(p, NULL, c.x - 0.74 * r, c.y + 0.74 * r);
++    CGPathAddLineToPoint(p, NULL, c.x - 0.02 * r, c.y + 0.02 * r);
++    CGPoint t = CGPointMake(c.x + 0.44 * r, c.y - 0.44 * r);
++    CGPathMoveToPoint(p, NULL, t.x, t.y - 0.50 * r); CGPathAddLineToPoint(p, NULL, t.x, t.y + 0.50 * r);
++    CGPathMoveToPoint(p, NULL, t.x - 0.50 * r, t.y); CGPathAddLineToPoint(p, NULL, t.x + 0.50 * r, t.y);
++    return p;
++}
++static CGPathRef iconWard(CGPoint c, CGFloat r) {   // Protego: a curved ward, and the spell come to nothing at it
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathAddArc(p, NULL, c.x + 0.34 * r, c.y, 0.76 * r, M_PI * 0.60, M_PI * 1.40, false);
++    CGPathMoveToPoint(p, NULL, c.x - 0.96 * r, c.y - 0.96 * r);
++    CGPathAddLineToPoint(p, NULL, c.x - 0.36 * r, c.y - 0.36 * r);
++    CGPoint t = CGPointMake(c.x - 0.62 * r, c.y - 0.62 * r);
++    CGPathMoveToPoint(p, NULL, t.x, t.y - 0.20 * r); CGPathAddLineToPoint(p, NULL, t.x, t.y + 0.20 * r);
++    CGPathMoveToPoint(p, NULL, t.x - 0.20 * r, t.y); CGPathAddLineToPoint(p, NULL, t.x + 0.20 * r, t.y);
++    return p;
++}
++static CGPathRef iconDodge(CGPoint c, CGFloat r) {   // a dodge: two chevrons, the way the character rolls aside
++    CGMutablePathRef p = CGPathCreateMutable();
++    for (int i = 0; i < 2; i++) { CGFloat x = c.x + (i * 0.54 - 0.28) * r;
++        CGPathMoveToPoint(p, NULL, x - 0.22 * r, c.y - 0.62 * r);
++        CGPathAddLineToPoint(p, NULL, x + 0.38 * r, c.y);
++        CGPathAddLineToPoint(p, NULL, x - 0.22 * r, c.y + 0.62 * r); }
++    return p;
++}
++static CGPathRef iconJump(CGPoint c, CGFloat r) {   // a jump: an up chevron over the ground it left
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathMoveToPoint(p, NULL, c.x - 0.62 * r, c.y + 0.02 * r);
++    CGPathAddLineToPoint(p, NULL, c.x, c.y - 0.66 * r);
++    CGPathAddLineToPoint(p, NULL, c.x + 0.62 * r, c.y + 0.02 * r);
++    CGPathMoveToPoint(p, NULL, c.x - 0.70 * r, c.y + 0.60 * r);
++    CGPathAddLineToPoint(p, NULL, c.x + 0.70 * r, c.y + 0.60 * r);
++    return p;
++}
++static CGPathRef iconBurst(CGPoint c, CGFloat r) {   // Ancient Magic: a burst of rays
++    CGMutablePathRef p = CGPathCreateMutable();
++    for (int i = 0; i < 6; i++) { CGFloat a = -M_PI_2 + i * M_PI / 3;
++        CGPathMoveToPoint(p, NULL, c.x + 0.26 * r * cos(a), c.y + 0.26 * r * sin(a));
++        CGPathAddLineToPoint(p, NULL, c.x + 0.92 * r * cos(a), c.y + 0.92 * r * sin(a)); }
++    return p;
++}
++static CGPathRef iconHand(CGPoint c, CGFloat r) {   // Interact: a raised finger over the fist (the game's own interact mark)
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathAddRoundedRect(p, NULL, CGRectMake(c.x - 0.19 * r, c.y - 0.96 * r, 0.38 * r, 0.94 * r), 0.19 * r, 0.19 * r);
++    CGPathAddRoundedRect(p, NULL, CGRectMake(c.x - 0.62 * r, c.y, 1.24 * r, 0.82 * r), 0.30 * r, 0.30 * r);
++    CGPathMoveToPoint(p, NULL, c.x + 0.30 * r, c.y + 0.14 * r);
++    CGPathAddQuadCurveToPoint(p, NULL, c.x + 0.62 * r, c.y + 0.22 * r, c.x + 0.50 * r, c.y + 0.60 * r);
++    return p;
++}
++static CGPathRef iconWheel(CGPoint c, CGFloat r) {   // the spell set wheel (L): the rim, and the spell in the middle
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - 0.80 * r, c.y - 0.80 * r, 1.60 * r, 1.60 * r));
++    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - 0.20 * r, c.y - 0.20 * r, 0.40 * r, 0.40 * r));
++    return p;
++}
++static CGPathRef iconCycle(CGPoint c, CGFloat r) {   // the next spell set (R): round in a circle
++    CGMutablePathRef p = CGPathCreateMutable(); CGFloat rad = 0.74 * r;
++    CGPathAddArc(p, NULL, c.x, c.y, rad, -M_PI * 0.86, M_PI * 0.56, false);
++    CGPoint n = CGPointMake(c.x + rad * cos(M_PI * 0.56), c.y + rad * sin(M_PI * 0.56));
++    CGPathMoveToPoint(p, NULL, n.x + 0.16 * r, n.y - 0.30 * r);
++    CGPathAddLineToPoint(p, NULL, n.x - 0.32 * r, n.y - 0.12 * r);
++    CGPathAddLineToPoint(p, NULL, n.x + 0.08 * r, n.y + 0.24 * r);
++    return p;
++}
++static CGPathRef iconLines(CGPoint c, CGFloat r) {   // the pause menu (+): three lines
++    CGMutablePathRef p = CGPathCreateMutable();
++    for (int i = -1; i <= 1; i++) {
++        CGPathMoveToPoint(p, NULL, c.x - 0.74 * r, c.y + i * 0.46 * r);
++        CGPathAddLineToPoint(p, NULL, c.x + 0.74 * r, c.y + i * 0.46 * r); }
++    return p;
++}
++static CGPathRef iconMap(CGPoint c, CGFloat r) {   // the field guide (−): a folded map
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGRect m = CGRectMake(c.x - 0.76 * r, c.y - 0.58 * r, 1.52 * r, 1.16 * r);
++    CGPathAddRect(p, NULL, m);
++    CGPathMoveToPoint(p, NULL, c.x - 0.25 * r, m.origin.y); CGPathAddLineToPoint(p, NULL, c.x - 0.25 * r, CGRectGetMaxY(m));
++    CGPathMoveToPoint(p, NULL, c.x + 0.25 * r, m.origin.y); CGPathAddLineToPoint(p, NULL, c.x + 0.25 * r, CGRectGetMaxY(m));
++    return p;
++}
++static CGPathRef iconFlask(CGPoint c, CGFloat r) {   // a tool slot (the potion wheel): the bottle in it
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathMoveToPoint(p, NULL, c.x - 0.34 * r, c.y - 0.94 * r); CGPathAddLineToPoint(p, NULL, c.x + 0.34 * r, c.y - 0.94 * r);   // the cork
++    CGPathMoveToPoint(p, NULL, c.x - 0.21 * r, c.y - 0.66 * r);
++    CGPathAddLineToPoint(p, NULL, c.x - 0.21 * r, c.y - 0.16 * r);
++    CGPathAddLineToPoint(p, NULL, c.x - 0.58 * r, c.y + 0.48 * r);
++    CGPathAddQuadCurveToPoint(p, NULL, c.x, c.y + 0.98 * r, c.x + 0.58 * r, c.y + 0.48 * r);
++    CGPathAddLineToPoint(p, NULL, c.x + 0.21 * r, c.y - 0.16 * r);
++    CGPathAddLineToPoint(p, NULL, c.x + 0.21 * r, c.y - 0.66 * r);
++    CGPathMoveToPoint(p, NULL, c.x - 0.50 * r, c.y + 0.20 * r); CGPathAddLineToPoint(p, NULL, c.x + 0.50 * r, c.y + 0.20 * r);   // the brew's level
++    return p;
++}
++static CGPathRef doseRingPath(CGPoint c, CGFloat r, CGFloat len) {   // the potion wheel's rim, and a tick in each gap between its slots
++    CGMutablePathRef p = CGPathCreateMutable();
++    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r));
++    for (int i = 0; i < 4; i++) { CGFloat a = M_PI_4 + i * M_PI_2;
++        CGPathMoveToPoint(p, NULL, c.x + (r + len) * cos(a), c.y + (r + len) * sin(a));
++        CGPathAddLineToPoint(p, NULL, c.x + r * cos(a), c.y + r * sin(a)); }
++    return p;
++}
+ static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
+ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+     CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
+@@ -508,7 +704,27 @@
+     t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
+     CFRelease(f);
+ }
++static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { placeLabel(t, CGPointMake(c.x, c.y + dy), fs); }   // a caption under an icon
++static void placeIcon(CAShapeLayer *l, CGPoint c, CGFloat half, CGFloat dy) {   // an icon of this half-size, centred on c + dy, its stroke in proportion
++    l.bounds = CGRectMake(0, 0, 2 * half, 2 * half); l.position = CGPointMake(c.x, c.y + dy); l.lineWidth = MAX(1.3, half * 0.17);
++}
+ 
++- (CGPathRef)styleGlyph:(int)b half:(CGFloat)h {   // the icon for this key, drawn in the icon layer's own space (the caller releases it)
++    CGPoint c = CGPointMake(h, h); CGFloat r = h * 0.92;
++    switch (b) {
++        case B_ZR: return iconWand(c, r);           // Basic Cast
++        case B_ZL: return iconWard(c, r);           // Protego
++        case B_A: return iconDodge(c, r);           // dodge
++        case B_B: return iconJump(c, r);            // jump
++        case B_X: return iconBurst(c, r);           // Ancient Magic
++        case B_Y: return iconHand(c, r);            // interact
++        case B_L: return iconWheel(c, r);           // the spell set wheel
++        case B_R: return iconCycle(c, r);           // the next spell set
++        case B_PLUS: return iconLines(c, r);        // the pause menu
++        case B_MINUS: return iconMap(c, r);         // the field guide
++        default: return iconFlask(c, r);            // the potion wheel's four slots
++    }
++}
+ - (void)layoutSubviews {
+     [super layoutSubviews];
+     UIWindowScene *ws = self.window.windowScene; if (ws) atomic_store(&g_iface_orient, (int)ws.effectiveGeometry.interfaceOrientation);
+@@ -518,27 +734,55 @@
      for (int b = 0; b < B_N; b++) if (_label[b] && _label[b].contentsScale != scale) {
          _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
      }
@@ -251,20 +451,30 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 -    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
 +    _controls.frame = self.layer.bounds; _deco.frame = self.layer.bounds;
 +    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
-+        setPath(_key[b], circlePath(c, _style ? K_STYLE_FACE_R * u : self.faceR)); placeLabel(_label[b], c, (_style ? 17 : 20) * u); }
++        setPath(_key[b], circlePath(c, _style ? K_STYLE_FACE_R * u : self.faceR));
++        if (_style) { CGFloat h = 10.5 * u; setPath(_ico[b], [self styleGlyph:b half:h]); placeIcon(_ico[b], c, h, -5 * u); placeLabelAt(_label[b], c, 11 * u, 13 * u); }
++        else placeLabel(_label[b], c, 20 * u); }
      for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
 -        if (isDrop(b)) {
 +        if (_style && isDrop(b)) {
 +            CGPoint c = [self dropCenter:b]; CGFloat r = [self dropR:b];
-+            if (b == B_ZR) { setPath(_key[b], circlePath(c, r)); placeLabel(_label[b], c, 19 * u); }
-+            else if (b == B_ZL) { setPath(_key[b], shieldPath(c, r)); placeLabel(_label[b], c, 15 * u); }
-+            else { setPath(_key[b], hexPath(c, r)); placeLabel(_label[b], c, 13 * u); }
++            if (b == B_ZR) { setPath(_key[b], circlePath(c, r)); setPath(_ico[b], [self styleGlyph:b half:24 * u]); placeIcon(_ico[b], c, 24 * u, -9 * u); placeLabelAt(_label[b], c, 15 * u, 32 * u); }
++            else if (b == B_ZL) { setPath(_key[b], shieldPath(c, r)); setPath(_ico[b], [self styleGlyph:b half:11.5 * u]); placeIcon(_ico[b], c, 11.5 * u, -8 * u); placeLabelAt(_label[b], c, 12 * u, 20 * u); }
++            else { setPath(_key[b], hexPath(c, r)); setPath(_ico[b], [self styleGlyph:b half:8 * u]); placeIcon(_ico[b], c, 8 * u, -4 * u); placeLabelAt(_label[b], c, 10 * u, 9.5 * u); }
 +        } else if (isDrop(b)) {
              BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
              setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
          } else if (isClick(b)) {
-@@ -531,14 +609,20 @@
-             setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+             CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
+         } else {
+             CGRect rc = [self pillRect:b];
+-            setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
++            setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL));
++            if (_style) {   // the icon on the left of the pill, the sign on the right: what it opens, and which key that is
++                CGFloat h = 8.5 * u, my = CGRectGetMidY(rc);
++                setPath(_ico[b], [self styleGlyph:b half:h]); placeIcon(_ico[b], CGPointMake(CGRectGetMinX(rc) + 0.30 * rc.size.width, my), h, 0);
++                placeLabel(_label[b], CGPointMake(CGRectGetMinX(rc) + 0.68 * rc.size.width, my), 13 * u);
++            } else placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
          }
      }
 -    static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
@@ -272,6 +482,14 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +    if (!_style) {   // the D-pad: the 3D layout only
 +        static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
 +        for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
++    } else {   // the potion wheel: four slots on its rim, a flask in each and the direction under it
++        static const int slot[4] = {B_UP, B_RIGHT, B_DOWN, B_LEFT};   // from the top, round
++        CGPoint c = self.dpadCenter; CGFloat r = self.dpadR, h = 7.5 * u;
++        for (int i = 0; i < 4; i++) { double a = -M_PI_2 + i * M_PI_2;
++            CGPoint here = CGPointMake(c.x + r * cos(a), c.y + r * sin(a));
++            setPath(_key[slot[i]], circlePath(here, K_STYLE_DOSE_KEY_R * u));
++            setPath(_ico[slot[i]], [self styleGlyph:slot[i] half:h]); placeIcon(_ico[slot[i]], here, h, -3.5 * u);
++            placeLabelAt(_label[slot[i]], here, 9 * u, 8.5 * u); }
 +    }
      CGFloat mr = K_MENU_R * u; CGPoint mc = self.menuCenter;
      _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
@@ -279,15 +497,16 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
      setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
 -    CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
-+    if (_style) {   // the engraving: ticks round the wand ring, three runs round the spell seal
++    if (_style) {   // the engraving: ticks round the wand ring, three runs round the spell seal, the potion wheel's rim
 +        setPath(_decoTicks, ticksPath(self.stickHome, [self stickR:0] * 0.94, 16, 9 * u));
 +        setPath(_decoSeal, arcRunPath([self dropCenter:B_ZR], K_STYLE_CAST_R * u * 1.2, 3, 1.30, 0.52));
++        setPath(_decoDose, doseRingPath(self.dpadCenter, self.dpadR, 6 * u));
 +    }
 +    CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
      setPath(_knob, circlePath(CGPointMake(k, k), k));
      CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
      in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
-@@ -548,11 +632,14 @@
+@@ -548,11 +792,15 @@
  - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
  - (void)refresh {   // pressed state → fill, sticks → knob position
      uint64_t all = _faceBits | _dpadBits | _btnBits;
@@ -297,15 +516,16 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 -    for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
 -        _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
 +    for (int b = 0; b < B_N; b++) { BOOL lit = (all >> b) & 1;
-+        _key[b].fillColor = (lit ? on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (lit ? textOn : text).CGColor; }
++        _key[b].fillColor = (lit ? on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (lit ? textOn : text).CGColor;
++        _ico[b].strokeColor = (lit ? textOn : text).CGColor; }
      CGPoint h = self.stickHome, o = [self knobOffset:0];
 -    _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : k_idle).CGColor;
 +    _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
-+    _ring.strokeColor = line.CGColor; _decoTicks.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor; _decoSeal.strokeColor = k_sLine.CGColor;
++    _ring.strokeColor = line.CGColor; _decoTicks.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor; _decoSeal.strokeColor = k_sLine.CGColor; _decoDose.strokeColor = k_sLine.CGColor;
      [CATransaction commit];
  }
  
-@@ -647,7 +734,7 @@
+@@ -647,7 +895,7 @@
      GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
      if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
      BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
@@ -314,7 +534,7 @@ diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  }
  @end
  
-@@ -747,7 +834,7 @@
+@@ -747,7 +995,7 @@
  void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
  void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
  int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
