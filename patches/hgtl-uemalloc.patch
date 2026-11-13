@@ -1,0 +1,31 @@
+diff --git a/dm/host/hle_uemalloc.c b/dm/host/hle_uemalloc.c
+index 1bd3494..67240ce 100644
+--- a/dm/host/hle_uemalloc.c
++++ b/dm/host/hle_uemalloc.c
+@@ -12,6 +12,12 @@
+ // 16 DumpAllocatorStats, 17 IsInternallyThreadSafe, 18 ValidateHeap, 19 GetDescriptiveName, 20 OnMallocInitialized (main+0x5e4c0e8: TryMalloc / TryRealloc call +0x18 / +0x28, GCreateMalloc
+ // calls +0x88 and +0xa0; Free is main+0x10, which reads the pool base as GetAllocationSize does). OCTOPATH TRAVELER II's vtable has no OnMallocInitialized, so the 21st word copied
+ // is the next vtable's offset to top, which nothing calls
++// Unreal Engine 4.27 with four more virtuals (Hogwarts Legacy; the name getter at slot 23) keeps 4.27's allocation half in the same slots: 3 Malloc, 4 TryMalloc and 6 TryRealloc
++// call +0x18 / +0x28, 8 QuantizeSize returns a pool size, 9 GetAllocationSize writes the size to its out-parameter and returns 1. Trim sits at 12 (its bool argument) and
++// DumpAllocatorStats at 16, then the four more virtuals 17-20 (three returns and GetAllocatorStats, which prints that this build has no allocator stats), IsInternallyThreadSafe 21 (1),
++// ValidateHeap 22 (1), GetDescriptiveName 23 ("Binned3") and OnMallocInitialized 24 (a ret): 25 words have to be copied, or the host's vtable would end in 0 where the engine asks for
++// its allocator's name. Trim (12) and DumpAllocatorStats (16) do nothing, as on the other titles; 10 and 11 keep the guest's own stubs (0, and 0 with the out-parameter cleared,
++// main+0x2d29de4 / main+0x2d29dec), which touch nothing and still answer a bool
+ // Unreal Engine 5.6 (FINAL FANTASY RESONANCE; the getter at slot 26) adds MallocZeroed / TryMallocZeroed after Free and two TLS cache calls after the setup, and two cached-memory queries at the end: 0-1 destructors,
+ // 2-5 FExec, 6 Malloc, 7 TryMalloc, 8 Realloc, 9 TryRealloc, 10 Free, 11 MallocZeroed, 12 TryMallocZeroed, 13 QuantizeSize, 14 GetAllocationSize, 15 Trim, 16 SetupTLSCachesOnCurrentThread,
+ // 17 MarkTLSCachesAsUsedOnCurrentThread, 18 MarkTLSCachesAsUnusedOnCurrentThread, 19 ClearAndDisableTLSCachesOnCurrentThread, 20 InitializeStatsMetadata, 21 UpdateStats, 22 GetAllocatorStats,
+@@ -28,11 +34,12 @@
+ #include <stdatomic.h>
+ 
+ // Slot layouts: which slots the host fills and which do nothing (up to 6; 0 ends the list); the others keep the guest's own functions
+-enum { UE5, UE4_27, UE5_6, UE3 };
++enum { UE5, UE4_27, UE4_27X, UE5_6, UE3 };
+ // name: the slot of the name getter, which the rewriter reports (UE_MALLOC_SLOT); size32: the size arguments and results are 32-bit (UE3); try_malloc / try_realloc 0: no such slot
+ static const struct { int name, nslot, malloc_, try_malloc, realloc_, try_realloc, free_, quantize, get_size, nothing[6]; bool size32; } k_lay[] = {
+     [UE5] = { 22, 26, 6, 7, 8, 9, 10, 11, 12, { 13, 14, 15, 19 } },      // Trim, the TLS cache setup and teardown, DumpAllocatorStats
+     [UE4_27] = { 19, 21, 3, 4, 5, 6, 7, 8, 9, { 10, 11, 12, 16 } },
++    [UE4_27X] = { 23, 25, 3, 4, 5, 6, 7, 8, 9, { 12, 16 } },   // the same allocation half; Trim 12 and DumpAllocatorStats 16, and 10-11 stay the guest's stubs (both answer a bool)
+     [UE5_6] = { 26, 32, 6, 7, 8, 9, 10, 13, 14, { 15, 16, 17, 18, 19, 23 } },   // Trim, the four TLS cache calls, DumpAllocatorStats
+     [UE3] = { -1, 25, 4, 0, 5, 0, 6, 3, 20, { 13, 21, 22 }, true },   // the TLS cache flush and setup, Trim
+ };
