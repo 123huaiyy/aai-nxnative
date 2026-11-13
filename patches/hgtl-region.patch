@@ -1,0 +1,39 @@
+diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
+index e87442e..051b52c 100644
+--- a/dm/host/hle_svc.c
++++ b/dm/host/hle_svc.c
+@@ -699,6 +699,21 @@ static void region_got(uint64_t *r, int param) {
+     pthread_mutex_unlock(&g_rgn_lock);
+     if (!kept) { static _Atomic int once; if (!atomic_fetch_add(&once, 1)) LOG("[RED] address region table: out of memory at %d regions, later ones are not in it", g_nrgn); }
+     if (t_rgn_size >= 0x10000000) LOG("[mem] address region %.2f GB at alias +%.2f GB, returning to %s", t_rgn_size / 1073741824.0, (a - ab) / 1073741824.0, t_rgn_who);
++    // A game can hand a region's memory out itself and write into it before any MapPhysicalMemory for it (Unreal's engine region: FMallocBinned3 takes its pool array and windows from
++    // it), where pages nothing opened are PROT_NONE and the first write is SIGBUS. Open the whole region here: mprotect costs no memory (a page costs its backing page only when it is
++    // written), the application pool still bounds what the game can touch, and a later UnmapPhysicalMemory of any part still closes it again
++    uint64_t rn = g_alias_cap - (a - ab);
++    if (t_rgn_size < rn) rn = t_rgn_size;
++    if (rn) {
++        uint64_t pg = (uint64_t)getpagesize(), rlo = a & ~(pg - 1), rhi = (a + rn + pg - 1) & ~(pg - 1);
++        if (mprotect((void *)(uintptr_t)rlo, (size_t)(rhi - rlo), PROT_READ | PROT_WRITE))
++            LOG("[RED] [mem] address region: cannot open %#llx+%#llx for writing (errno %d)", (unsigned long long)rlo, (unsigned long long)(rhi - rlo), errno);
++        else {
++            int64_t d = alias_pages(a - ab, rn, 1) * 4096;
++            if (d) atomic_fetch_add(&g_alias_mapped, d);
++            LOG("[mem] address region opened for writing: %#llx+%#llx (%.2f GB)", (unsigned long long)rlo, (unsigned long long)(rhi - rlo), (rhi - rlo) / 1073741824.0);
++        }
++    }
+ }
+ static void region_free(uint64_t *r, int param) {
+     (void)param;
+@@ -990,6 +1005,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+             if ((lo - mlo) / 4096 != (uint64_t)alias_unmapped(mlo - (uintptr_t)g_alias, lo - mlo)) mlo += pg;
+             if ((mhi - hi) / 4096 != (uint64_t)alias_unmapped(hi - (uintptr_t)g_alias, mhi - hi)) mhi -= pg;
+         }
++        // A commit opens its range even where the page bitmap already says those pages are mapped: a page the SDK believes committed but the host never opened stays PROT_NONE, and the
++        // game's first write there is SIGBUS (a region a game hands out itself: Unreal's engine region, whose pool array the engine writes into right after taking it)
++        if (commit && !changed && mhi > mlo) changed = 1;
++        { static _Atomic int nmap_log; if (commit && atomic_fetch_add(&nmap_log, 1) < 32)   // the first commits of a bring-up, to see what the SDK maps where
++            LOG("[mem] MapPhysicalMemory %#llx+%#zx: %lld of %lld page(s) new, opening %#llx+%#llx", (unsigned long long)a, size,
++                (long long)(need / 4096), (long long)(size / 4096), (unsigned long long)mlo, (unsigned long long)(mhi - mlo)); }
+         if (changed && mhi > mlo) {
+             if (commit) {
+                 if (mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE))
