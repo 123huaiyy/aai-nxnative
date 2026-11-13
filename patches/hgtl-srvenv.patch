@@ -1,0 +1,19 @@
+diff --git a/dm/host/hle_net.c b/dm/host/hle_net.c
+index 17f5eef..444548f 100644
+--- a/dm/host/hle_net.c
++++ b/dm/host/hle_net.c
+@@ -33,6 +33,14 @@ HLE_FORCE("_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", "offline:
+ HLE_FORCE("nnsslInitialize", "connects to the ssl service; the network library's global init needs it to succeed, offline creates no session (cut)", Result, h_ssl_Initialize, void) { return RES_OK; }
+ HLE_FORCE("nnsslFinalize", "pairs with nnsslInitialize (cut)", Result, h_ssl_Finalize, void) { return RES_OK; }
+ 
++// The server environment (nsd's environment id: "lp1" live, "dd1" development, "sd1" / "sp1" / "dp1" the other server sets). In nnSdk-16_2_3
++// nn::oe::GetServerEnvironmentType does not answer itself: it tail-calls nn::nsd::GetApplicationServerEnvironmentType (sdk+0x394670), which connects to
++// the nsd service (nsd:u, then nsd:a) and aborts with Result 0xe8d when the connection fails (sdk+0x395d28) instead of returning a failure. The host
++// serves neither service, and Hogwarts Legacy asks at boot (main+0x17c4c44, where Unreal builds its environment id): it aborted there. A retail console
++// is the live environment: 1, which this game maps to "lp1" (its jump table at main+0x62027e1: 0 "dd1", 1 "lp1", 2 "sd1", 3 "sp1", 4 "dp1"), the id
++// nn::nsd::GetEnvironmentIdentifier answers with (hle_offline.c)
++HLE_FORCE("_ZN2nn2oe24GetServerEnvironmentTypeEv", "server environment: retail (nsd:u is not served and the SDK aborts when it cannot connect)", int, h_oe_ServerEnv, void) { return 1; }
++
+ // ---------- socket: offline, all calls that contact the service return -1 in BSD convention, error code ENETDOWN ----------
+ // Not cut: Inet* / nnsocketInet* byte order and address text conversion (pure computation).
+ #define SK_ENETDOWN 50                  // Horizon sockets use FreeBSD error codes
