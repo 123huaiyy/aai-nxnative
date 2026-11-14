@@ -79,7 +79,7 @@ index 784727b..05915fe 100644
  void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
  bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 1f2040e..ff5503e 100644
+index 1f2040e..5624eca 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
 @@ -1,15 +1,17 @@
@@ -491,7 +491,7 @@ index 1f2040e..ff5503e 100644
  
  - (void)layoutSubviews {
      [super layoutSubviews];
-@@ -519,26 +653,78 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+@@ -519,26 +653,73 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
          _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
      }
      _controls.frame = self.layer.bounds;
@@ -501,10 +501,7 @@ index 1f2040e..ff5503e 100644
 +            setPath(_key[b], circlePath(c, K_STYLE_FACE_R * u)); _key[b].lineWidth = 2.0 * u;
 +            placeArt(_art[b], c, K_STYLE_FACE_ART * u);
 +            CGFloat out = (K_STYLE_FACE_R + K_STYLE_CAP_GAP + 5) * u; CGPoint caption = c;
-+            if (b == B_A) caption.y -= out;                         // roll: above its plate
-+            else if (b == B_B) caption.x -= out;                   // action: inward from the screen edge
-+            else if (b == B_X) caption.x -= out;                   // two-hand toggle: inward
-+            else caption.y += out;                                // item: below its plate
++            caption.y += out;
 +            placeLabel(_label[b], caption, K_STYLE_CAP * u);
 +        } else {
 +            setPath(_key[b], circlePath(c, self.faceR));
@@ -517,9 +514,7 @@ index 1f2040e..ff5503e 100644
 +            setPath(_key[b], circlePath(c, [self dropR:b])); _key[b].lineWidth = 2.0 * u;
 +            placeArt(_art[b], c, art);
 +            CGPoint caption = c; CGFloat out = [self dropR:b] + K_STYLE_CAP_GAP * u;
-+            if (b == B_ZL || b == B_L) caption.y += out;
-+            else if (b == B_ZR) caption.x -= out;
-+            else caption.y += out;
++            caption.y += out;
 +            placeLabel(_label[b], caption, K_STYLE_CAP * u);
 +        } else if (isDrop(b)) {
              BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
@@ -577,7 +572,7 @@ index 1f2040e..ff5503e 100644
      setPath(_knob, circlePath(CGPointMake(k, k), k));
      CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
      in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
-@@ -546,13 +732,21 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+@@ -546,13 +727,21 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      [self refresh];
  }
  - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
@@ -603,7 +598,7 @@ index 1f2040e..ff5503e 100644
      [CATransaction commit];
  }
  
-@@ -647,7 +841,7 @@ static BOOL pads_slotted(GCController *gone) {
+@@ -647,7 +836,7 @@ static BOOL pads_slotted(GCController *gone) {
      GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
      if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
      BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
@@ -612,7 +607,7 @@ index 1f2040e..ff5503e 100644
  }
  @end
  
-@@ -747,7 +941,10 @@ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arra
+@@ -747,7 +936,10 @@ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arra
  void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
  void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
  int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
