@@ -28938,7 +28938,7 @@ index 4b9176a..281f6ea 100644
  int config_live_combo_window(void);
  void config_window_focus(int focused);
 diff --git a/runtime/host_input.c b/runtime/host_input.c
-index d55ebb1..89d25b5 100644
+index d55ebb1..fcc44f0 100644
 --- a/runtime/host_input.c
 +++ b/runtime/host_input.c
 @@ -26,6 +26,9 @@
@@ -28951,35 +28951,50 @@ index d55ebb1..89d25b5 100644
  
  #define B(x) (1ull << (x))
  
-@@ -591,6 +594,11 @@ void host_input_update(void) {
+@@ -591,6 +594,12 @@ void host_input_update(void) {
      lx += kx * k, ly += ky * k;
      b |= mouse_buttons;
      mouse_update(&rx, &ry);
 +#if defined(__APPLE__)
 +    uint64_t touch_buttons; int tx,ty,trx,try_;
++    if (hunter_touch_take_menu()) overlay_toggle_menu();
 +    hunter_touch_read(&touch_buttons,&tx,&ty,&trx,&try_);
 +    b |= touch_buttons; lx += tx; ly += ty; rx += trx; ry += try_;
 +#endif
  
      if (pad) {
          static const struct { SDL_GamepadButton sdl; int btn; } pad_buttons[] = {
+diff --git a/runtime/services/misc.c b/runtime/services/misc.c
+index dab197a..d1d47f3 100644
+--- a/runtime/services/misc.c
++++ b/runtime/services/misc.c
+@@ -112,7 +112,7 @@ static const char *const languages[] = {"ja", "en-US", "fr", "de", "it", "es", "
+ 
+ const char *settings_language(void) {
+     const char *l = getenv("MHGU_LANG");
+-    return l && *l ? l : "en-US";
++    return l && *l ? l : "zh-Hans";
+ }
+ 
+ static uint64_t lang_code(const char *s) {
 diff --git a/runtime/touch_hunter.h b/runtime/touch_hunter.h
 new file mode 100644
-index 0000000..dbf98bb
+index 0000000..8231969
 --- /dev/null
 +++ b/runtime/touch_hunter.h
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,6 @@
 +#pragma once
 +#include <stdint.h>
 +struct SDL_Window;
 +void hunter_touch_attach(struct SDL_Window *window);
 +void hunter_touch_read(uint64_t *buttons, int *lx, int *ly, int *rx, int *ry);
++int hunter_touch_take_menu(void);
 diff --git a/runtime/touch_hunter.m b/runtime/touch_hunter.m
 new file mode 100644
-index 0000000..dbeedea
+index 0000000..7c765ee
 --- /dev/null
 +++ b/runtime/touch_hunter.m
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,115 @@
 +#import <UIKit/UIKit.h>
 +#import <SDL3/SDL.h>
 +#include <pthread.h>
@@ -28987,10 +29002,12 @@ index 0000000..dbeedea
 +#include <string.h>
 +#include "hle/input.h"
 +#include "touch_hunter.h"
++#include "overlay.h"
 +
 +static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 +static uint64_t buttons;
 +static int axes[4];
++static int menuRequested;
 +#define BIT(x) (1ull << (x))
 +typedef struct { CGFloat x,y,r; uint64_t mask; int icon; __unsafe_unretained NSString *name; } Key;
 +
@@ -29034,6 +29051,7 @@ index 0000000..dbeedea
 +    ADD(leftEdge+220*s,b-49*s,21*s,BIT(BTN_DOWN),9,@"↓");
 +    ADD(width/2-46*s,27*s,19*s,BIT(BTN_MINUS),12,@"特殊 −");
 +    ADD(width/2+46*s,27*s,19*s,BIT(BTN_PLUS),14,@"菜单 +");
++    ADD(width/2+100*s,27*s,19*s,0,15,@"模组");
 +#undef ADD
 +}
 +- (void)layoutSubviews { [super layoutSubviews]; [self buildKeys]; [self setNeedsDisplay]; }
@@ -29066,7 +29084,7 @@ index 0000000..dbeedea
 +    (void)event;
 +    for(UITouch *t in touches) { CGPoint p=[t locationInView:self]; int best=-1; CGFloat bd=1;
 +        for(int i=0;i<count;i++){ Key k=keys[i]; CGFloat d=hypot(p.x-k.x,p.y-k.y)/MAX(k.r*1.2,22); if(d<bd)best=i,bd=d; }
-+        if(best>=0){[owners setObject:@(best) forKey:t]; continue;}
++        if(best>=0){ if(keys[best].mask==0){ pthread_mutex_lock(&mu); menuRequested=1; pthread_mutex_unlock(&mu); } else [owners setObject:@(best) forKey:t]; continue;}
 +        CGPoint c=CGPointMake(leftEdge+76*scale,height-77*scale);
 +        if(!leftTouch && hypot(p.x-c.x,p.y-c.y)<80*scale){leftTouch=t;leftPoint=p;[owners setObject:@(-1) forKey:t];}
 +        else if(!cameraTouch && p.x>width*0.45){cameraTouch=t;cameraStart=cameraPoint=p;[owners setObject:@(-2) forKey:t];}
@@ -29076,6 +29094,10 @@ index 0000000..dbeedea
 +- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftPoint=[t locationInView:self]; if(t==cameraTouch)cameraPoint=[t locationInView:self];} [self publish]; }
 +- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftTouch=nil; if(t==cameraTouch)cameraTouch=nil; [owners removeObjectForKey:t];} [self publish]; }
 +- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self touchesEnded:touches withEvent:event]; }
++- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)event {
++    if (overlay_menu_open()) { Key k=keys[count-1]; if(hypot(p.x-k.x,p.y-k.y)>MAX(k.r*1.2,22)) return nil; }
++    return [super hitTest:p withEvent:event];
++}
 +@end
 +
 +void hunter_touch_attach(SDL_Window *window) {
@@ -29087,6 +29109,7 @@ index 0000000..dbeedea
 +void hunter_touch_read(uint64_t *b,int *lx,int *ly,int *rx,int *ry) {
 +    pthread_mutex_lock(&mu); *b=buttons; *lx=axes[0]; *ly=axes[1]; *rx=axes[2]; *ry=axes[3]; pthread_mutex_unlock(&mu);
 +}
++int hunter_touch_take_menu(void) { pthread_mutex_lock(&mu); int v=menuRequested; menuRequested=0; pthread_mutex_unlock(&mu); return v; }
 diff --git a/runtime/ui.c b/runtime/ui.c
 index 54b058d..a90b4b6 100644
 --- a/runtime/ui.c

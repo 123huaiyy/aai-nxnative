@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     name: Build MHGURecomp for iOS / iPadOS
-    runs-on: macos-14
+    runs-on: xcode-27
     defaults:
       run:
         working-directory: source
