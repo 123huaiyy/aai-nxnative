@@ -1,0 +1,1754 @@
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index d1478b6..39bd335 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -8,11 +8,11 @@
+ //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
+ //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
+ //   Game style: the same controls, laid out as the game's own screen furniture rather than as a pad. A wand ring in the bottom-left corner is the left stick; a large spell seal in the bottom-right is ZR, the action a game like Hogwarts Legacy casts with; a shield inward of it is ZL; A / B / X / Y sit on an arc over the seal, which is where the thumb already is; a potion wheel above the wand ring is the D-pad (four slots on a rim, the game's tool slots: a slide round the rim picks one, and a slot is never two at once); L / R are high on each side.
+-//     Every key carries a drawn icon of what it does and, under it in small type, the button it stands for: a wand (cast), a ward (Protego), two chevrons (dodge), a chevron over the ground (jump), a burst (Ancient Magic), a raised hand (interact), a rim with the spell in it (the spell set wheel), a circle round (the next set), three lines (the pause menu), a folded map (the field guide) and a flask in each of the potion wheel's slots. The wand ring, the one control that needs no telling, carries neither. Icons are strokes, not images: sharp at every scale, no asset. No L3 / R3 (the 3D layout has those), and the right half of the screen is the right stick. Keys are gold on dark instead of white on nothing.
++//     Every key is one picture of what it does and, under it in small type, what it is bound to then. The pictures are the artwork a local ComfyUI (Qwen-Image) drew, one gold sigil per verb: a seal of rings and a star (cast), a kite shield (Protego), an arrow sweeping aside (dodge), an arrow rising off the ground (jump), a sunburst (Ancient Magic), a raised hand (interact), a ring with a cross in it (the spell set wheel), a ring with an arrow round it (the next set), three lines (the pause menu), an open book (the field guide) and, empty and uncoloured like the rest, one flask for each of the four potions. DmPadArt.h carries them as base64, so they travel with this file through the same patch. Each was keyed to alpha and given a dark edge baked under its own stroke rather than a halo behind it: this game opens on a near-white scene, where a thin gold line needs an edge to read, and a halo there is a grey rectangle — the first bake's mistake, and the reason the pictures went back to ComfyUI. One CALayer a key: no disc behind it, no stroke, no engraving, no shadow. That is the whole of what the previous pad spent three layers a key on, and it is why this one does not look heavy. A press brightens the glyph and pulls it in 8%, the only thing on the pad that moves besides the stick's knob. Captions carry a short dark shadow for the same reason the glyphs carry an edge. The wand ring, the one control that needs no telling, carries no caption. No L3 / R3 (the 3D layout has those), and the right half of the screen is the right stick.
+ //   Hidden: nothing but the menu button, dimmed to a quarter, for a player with a controller on who wants a clean screen. No control takes a touch then: every one goes to the game's touch screen.
+ //   Touch-down ownership: the menu button where it is nearer than a locked key (a view of its own, DmMenuButton), locked keys next (shoulders, − / +, L3 / R3), then whichever of the diamond, the D-pad and the left stick has the smallest distance / grab radius (the left stick's grab circle borders the D-pad),
+ //     then in 3D the right stick for a touch in the right third.
+-//   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
++//   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one layer each (a shape in the pad layouts, a picture in the Game style layout): a press only swaps a fill or brightens a glyph, a stick only moves its knob, nothing redraws the whole screen.
+ //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen when DmLayout assigns a local game viewport (pushGame; Super Mario Galaxy's pointer in handheld mode).
+ //   The virtual gamepad (all but the menu button) hides while a physical controller is connected and comes back when it is removed; unclaimed touches go to the game only when a local game viewport exists. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller); a Nintendo pad maps by its labels (pad_apple.h).
+ //   Each physical controller is a player of its own (local co-op), as on the Mac: the first one connected is player 1, together with the touch gamepad, the next player 2, and so on up to 8; see "Physical controllers" below.
+@@ -35,6 +35,7 @@
+ #include <stdatomic.h>
+ #import "DmLayout.h"
+ #import "DmGameMenu.h"
++#import "DmPadArt.h"   // dm_pad_art() and DM_ART_*: the Game style layout's glyphs
+ 
+ enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
+ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
+@@ -132,22 +133,30 @@ static const CGFloat
+     K_RSTICK_R = 60,                                // right stick (not drawn): radius around its centre, the touch-down point
+     K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
+     K_CLICK_X = 102, K_CLICK_R = 17,                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+-    // the Game style layout: the game's own screen furniture instead of a pad
+-    K_STYLE_MOVE_X = 118, K_STYLE_MOVE_Y = 104,     // wand ring (the left stick): centre from the left and the bottom
+-    K_STYLE_MOVE_R = 78, K_STYLE_KNOB_R = 27,
+-    K_STYLE_CAST_X = 128, K_STYLE_CAST_Y = 116,     // spell seal (ZR, the main action): centre from the right and the bottom, radius
+-    K_STYLE_CAST_R = 58,
+-    K_STYLE_GUARD_DX = 150, K_STYLE_GUARD_DY = 6,   // shield (ZL): inward of the seal and level with it, radius
+-    K_STYLE_GUARD_R = 42,
+-    K_STYLE_ARC_R = 108, K_STYLE_ARC_STEP = 0.646,  // A / B / X / Y: this far from the seal's centre, the arc's keys this many radians apart
+-    K_STYLE_FACE_R = 26,
+-    K_STYLE_DOSE_X = 118, K_STYLE_DOSE_Y = 268,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
+-    K_STYLE_DOSE_R = 50, K_STYLE_DOSE_KEY_R = 18,   // the rim its slots sit on, a slot's radius
++    // the Game style layout: the game's own screen furniture instead of a pad. A key is its glyph (DmPadArt.h)
++    // and the binding under it: no disc, no rim, no engraving, because the picture already is the key.
++    K_STYLE_MOVE_X = 112, K_STYLE_MOVE_Y = 104,     // wand ring (the left stick): centre from the left and the bottom
++    K_STYLE_MOVE_R = 58, K_STYLE_KNOB_R = 22,
++    K_STYLE_CAST_X = 126, K_STYLE_CAST_Y = 112,     // spell seal (ZR, the main action): centre from the right and the bottom
++    K_STYLE_CAST_R = 58,                            // its target radius, then the size the glyph itself is drawn at
++    K_STYLE_CAST_ART = 124,
++    K_STYLE_GUARD_DX = 152, K_STYLE_GUARD_DY = 2,   // shield (ZL): inward of the seal and level with it
++    K_STYLE_GUARD_R = 42, K_STYLE_GUARD_ART = 76,
++    K_STYLE_ARC_R = 101, K_STYLE_ARC_STEP = 0.600,  // A / B / X / Y: this far from the seal's centre, the arc's keys this many radians apart
++    K_STYLE_FACE_R = 26, K_STYLE_FACE_ART = 44,     // the target radius, then the glyph's own size
++    K_STYLE_DOSE_X = 118, K_STYLE_DOSE_Y = 250,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
++    K_STYLE_DOSE_R = 48, K_STYLE_DOSE_ART = 44,     // the rim its slots sit on, a flask's size
++    K_STYLE_DOSE_CAP = 9.5,                         // a potion's name: the wheel's four captions, smaller than a key's binding
+     K_STYLE_DOSE_GRAB = 1.15,                       // how near the wheel's centre a touch-down takes it (times the rim's radius)
+-    K_STYLE_PILL_W = 62, K_STYLE_PILL_H = 30,       // − / +: wider than the pad layouts' pair, room for the icon beside the sign
+-    K_STYLE_PILL_DX = 56,                           // and that much further out, clear of the menu button between them
+-    K_STYLE_SIDE_X = 74, K_STYLE_SIDE_Y = 44,       // L / R: high on each side, radius
+-    K_STYLE_SIDE_R = 22;
++    K_STYLE_PILL_W = 76, K_STYLE_PILL_H = 40,       // − / +: the glyph over its sign, a taller target than the pad layouts' pair
++    K_STYLE_PILL_DX = 64, K_STYLE_PILL_Y = 30,      // and that much further out, clear of the menu button between them
++    K_STYLE_PILL_ART = 26,                          // the glyph on the pill
++    K_STYLE_SIDE_X = 44, K_STYLE_SIDE_Y = 46,       // L / R: high on each side, radius
++    K_STYLE_SIDE_R = 22, K_STYLE_SIDE_ART = 34,
++    K_STYLE_CAP = 10.5,                             // the binding under a glyph: small type, a caption and not a label
++    K_STYLE_CAP_GAP = 8,                            // between the glyph's edge and that caption
++    K_STYLE_IDLE = 0.80, K_STYLE_LIT = 1.0,         // a glyph's opacity at rest and under a finger
++    K_STYLE_PRESS = 0.92;                           // and how far it shrinks when pressed
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
+ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+ int dm_opmode(void);   // hle_oe.c: 0 = handheld
+@@ -172,7 +181,8 @@ static void pads_start(void);   // Physical controllers, below
+     CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
+     uint64_t _faceBits, _dpadBits, _btnBits;
+     NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
+-    CAShapeLayer *_key[B_N], *_ico[B_N]; CATextLayer *_label[B_N];   // one layer per key: its shape, the icon of what it does, its caption
++    CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one shape per key (the pad layouts) and its caption
++    CALayer *_art[B_N];                                 // the Game style layout's glyph for that key: a CGImage from DmPadArt.h
+     CAShapeLayer *_ring, *_knob;                   // the left stick (the right one is not drawn)
+     DmMenuButton *_menu;                           // opens the in-game menu (GameMenu.swift)
+     UIImpactFeedbackGenerator *_touchFeedback;       // one short feedback per touch-control press edge
+@@ -181,7 +191,7 @@ static void pads_start(void);   // Physical controllers, below
+     BOOL _full, _tap, _style, _hidden;             // the 3D / Tap / Game style / Hidden layout is current
+     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
+     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
+-    CALayer *_deco; CAShapeLayer *_decoTicks, *_decoSeal, *_decoDose;   // the Game style layout's engraving: the wand ring's ticks, the spell seal's outer arcs, the potion wheel's rim
++    CAShapeLayer *_doseRing;                       // the Game style layout's one stroke: the rim the potion wheel's slots sit on
+     DmLayout _layout;
+     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+ }
+@@ -197,10 +207,35 @@ static CAShapeLayer *shape(CALayer *parent) {
+ static CATextLayer *label(CALayer *parent, NSString *s) {
+     CATextLayer *t = [CATextLayer layer];
+     t.string = s; t.alignmentMode = kCAAlignmentCenter; t.foregroundColor = k_text.CGColor;
++    // pale gold type on a near-white scene is invisible: a short dark shadow is what makes the caption read
++    // on both grounds, and it costs nothing because a caption is drawn once and never again.
++    t.shadowColor = UIColor.blackColor.CGColor; t.shadowOpacity = 0.9; t.shadowRadius = 2.5;
++    t.shadowOffset = CGSizeMake(0, 0.5);
+     [parent addSublayer:t]; return t;
+ }
+ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
+ static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_DOWN); }   // the Game style layout's keys: A / B / X / Y, the shoulders and triggers, − / +, the potion wheel (no L3 / R3)
++static int artFor(int b) {   // the glyph for a key: what it does on this game's screen, not which button it is
++    switch (b) {
++        case B_ZR: return DM_ART_CAST; case B_ZL: return DM_ART_WARD;
++        case B_A: return DM_ART_DODGE; case B_B: return DM_ART_JUMP;
++        case B_X: return DM_ART_ANCIENT; case B_Y: return DM_ART_INTERACT;
++        case B_L: return DM_ART_SETWHEEL; case B_R: return DM_ART_CYCLE;
++        case B_PLUS: return DM_ART_PAUSE; case B_MINUS: return DM_ART_MAP;
++        case B_UP: return DM_ART_VIAL_HEAL; case B_LEFT: return DM_ART_VIAL_FOCUS;
++        case B_DOWN: return DM_ART_VIAL_POWER; case B_RIGHT: return DM_ART_VIAL_GUARD;
++        default: return -1;   // the 3D layout's keys carry no glyph
++    }
++}
++static CALayer *artLayer(CALayer *parent, int which) {   // a glyph on a layer of its own, so a press costs an opacity and a scale
++    CALayer *l = [CALayer layer];
++    l.contents = (__bridge id)dm_pad_art(which);
++    l.contentsGravity = kCAGravityResizeAspect;
++    l.opacity = K_STYLE_IDLE;
++    [parent addSublayer:l];
++    return l;
++}
++static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMake(0, 0, size, size); l.position = c; }   // a glyph of this size, centred on c
+ 
+ - (instancetype)initWithFrame:(CGRect)f {
+     if ((self = [super initWithFrame:f])) {
+@@ -225,20 +260,17 @@ static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_DOWN); }
+             k_sText = [UIColor colorWithRed:0.95 green:0.89 blue:0.73 alpha:0.85]; k_sTextOn = [UIColor colorWithRed:0.10 green:0.08 blue:0.05 alpha:0.85];
+         });
+         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
+-        _deco = [CALayer layer]; [_controls addSublayer:_deco];
+-        _decoTicks = shape(_deco); _decoTicks.fillColor = nil; _decoTicks.lineWidth = 2.5; _decoTicks.lineCap = kCALineCapRound; _decoTicks.shadowOpacity = 0;
+-        _decoSeal = shape(_deco); _decoSeal.fillColor = nil; _decoSeal.lineWidth = 2.5; _decoSeal.lineCap = kCALineCapRound; _decoSeal.shadowOpacity = 0;
+-        _decoDose = shape(_deco); _decoDose.fillColor = nil; _decoDose.lineWidth = 2; _decoDose.lineCap = kCALineCapRound; _decoDose.shadowOpacity = 0;
++        _doseRing = shape(_controls); _doseRing.fillColor = nil; _doseRing.lineWidth = 1.6; _doseRing.lineCap = kCALineCapRound; _doseRing.shadowOpacity = 0;
+         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
+         _knob = shape(_controls);
+         CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
+         [_knob addSublayer:in];
+-        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"◀", @"▲", @"▶", @"▼"};   // the potion wheel's four slots: the caption is the direction, as on the D-pad
++        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"专注", @"治疗", @"护盾", @"力量"};   // the potion wheel's slots are captioned with the potion: the glyph says which bottle, the type says what it does
+         for (int b = 0; b < B_N; b++) {
+             _key[b] = shape(_controls);
+             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label; the potion wheel's slots do
+-            _ico[b] = shape(_key[b]);   // what the key does, drawn inside it
+-            _ico[b].fillColor = nil; _ico[b].lineCap = kCALineCapRound; _ico[b].lineJoin = kCALineJoinRound; _ico[b].shadowOpacity = 0;
++            int which = artFor(b);
++            if (which >= 0) _art[b] = artLayer(_controls, which);   // what the key does, as the artwork drew it
+         }
+         _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
+         _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
+@@ -265,11 +297,12 @@ static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_DOWN); }
+ }
+ - (void)applyLayout {   // show / hide the controls for the current layout
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+-    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (_style ? !styleKey(b) : (fullOnly(b) && !_full));
+-        _ico[b].hidden = !_style;                        // the icons are the Game style layout's alone
++    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (fullOnly(b) && !_full);   // in the Game style layout the glyph is the key: the shape keeps no path, so only its caption shows
++        if (_style) { _key[b].path = NULL; _key[b].shadowPath = NULL; }   // and the path a previous layout left behind is cleared, not merely hidden
++        if (_art[b]) _art[b].hidden = !_style;           // the glyphs are the Game style layout's alone
+         if (b >= B_LEFT) _label[b].hidden = !_style; }   // the D-pad arms carry no caption; the potion wheel's slots do
+     _ring.hidden = _knob.hidden = _tap;
+-    _deco.hidden = !_style;
++    _doseRing.hidden = !_style;
+     [CATransaction commit];
+     _controls.hidden = _padOff || _hidden;   // Hidden, or a controller on: the screen shows the game and nothing else
+     _menu.alpha = _hidden ? 0.22 : 1;        // still there and still a touch target: it is the only way back
+@@ -361,14 +394,15 @@ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
+     CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_ZR || b == B_R, MAX((z ? K_ZL_X : K_L_X) * u, edge), CGRectGetMinY(s) + MAX((z ? K_ZL_Y : K_L_Y) * u, edge)); }
+ - (CGFloat)dropR:(int)b { if (_style) return (b == B_ZR ? K_STYLE_CAST_R : b == B_ZL ? K_STYLE_GUARD_R : K_STYLE_SIDE_R) * self.u; return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
++- (CGFloat)dropArt:(int)b { return (b == B_ZR ? K_STYLE_CAST_ART : b == B_ZL ? K_STYLE_GUARD_ART : K_STYLE_SIDE_ART) * self.u; }   // the glyph drawn there (the target stays dropR:)
+ - (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_RS, MAX(K_CLICK_X * u, edge), CGRectGetMinY(s) + MAX(K_ZL_Y * u, edge)); }
+ - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u;
+     CGFloat w = (_style ? K_STYLE_PILL_W : K_PILL_W) * u, h = (_style ? K_STYLE_PILL_H : K_PILL_H) * u;
+-    CGFloat dx = (_style ? K_STYLE_PILL_DX : K_PILL_DX) * u;
+-    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? dx : -dx), CGRectGetMinY(s) + MAX(K_PILL_Y * u, _layout.separated ? 14 : 0));   // − on the left, + on the right
++    CGFloat dx = (_style ? K_STYLE_PILL_DX : K_PILL_DX) * u, y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * u;
++    CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? dx : -dx), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0));   // − on the left, + on the right
+     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+-- (CGPoint)menuCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(K_PILL_Y * self.u, _layout.separated ? 14 : 0)); }
++- (CGPoint)menuCenter { CGRect s = self.safe; CGFloat y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * self.u; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0)); }
+ 
+ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
+ - (CGFloat)buttonDistance:(int)b point:(CGPoint)p {
+@@ -546,33 +580,8 @@ int front_web_touch(void);
+ 
+ // ---- Shapes ----
+ static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
+-static CGPathRef ticksPath(CGPoint c, CGFloat r, int n, CGFloat len) {   // n radial ticks round a circle (round-capped): the wand ring's engraving
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = 0; i < n; i++) { CGFloat a = -M_PI_2 + i * 2 * M_PI / n;
+-        CGPathMoveToPoint(p, NULL, c.x + (r - len) * cos(a), c.y + (r - len) * sin(a));
+-        CGPathAddLineToPoint(p, NULL, c.x + r * cos(a), c.y + r * sin(a)); }
+-    return p;
+-}
+-static CGPathRef arcRunPath(CGPoint c, CGFloat r, int n, CGFloat span, CGFloat gap) {   // n arcs of span radians from the top, a gap apart: the seal's outer runs
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = 0; i < n; i++) { CGFloat a = -M_PI_2 + i * (span + gap); CGPathAddArc(p, NULL, c.x, c.y, r, a, a + span, false); }
+-    return p;
+-}
+-static CGPathRef shieldPath(CGPoint c, CGFloat r) {   // a shield: rounded shoulders, a point at the bottom (ZL)
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathMoveToPoint(p, NULL, c.x - 0.78 * r, c.y - 0.62 * r);
+-    CGPathAddQuadCurveToPoint(p, NULL, c.x, c.y - 1.06 * r, c.x + 0.78 * r, c.y - 0.62 * r);
+-    CGPathAddQuadCurveToPoint(p, NULL, c.x + 0.86 * r, c.y + 0.36 * r, c.x, c.y + 1.04 * r);
+-    CGPathAddQuadCurveToPoint(p, NULL, c.x - 0.86 * r, c.y + 0.36 * r, c.x - 0.78 * r, c.y - 0.62 * r);
+-    CGPathCloseSubpath(p); return p;
+-}
+-static CGPathRef hexPath(CGPoint c, CGFloat r) {   // a small flat-topped hexagon (L / R)
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = 0; i < 6; i++) { CGFloat a = -M_PI_2 + M_PI / 6 + i * M_PI / 3;
+-        CGPoint v = CGPointMake(c.x + r * cos(a), c.y + r * sin(a));
+-        if (i) CGPathAddLineToPoint(p, NULL, v.x, v.y); else CGPathMoveToPoint(p, NULL, v.x, v.y); }
+-    CGPathCloseSubpath(p); return p;
+-}
++// (the engraving's strokes stood here: ticks round the wand ring, runs round the seal, the shield's and the
++//  hexagon's outlines. The glyphs are pictures now and carry all of that in the art, so they are gone.)
+ static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round) {   // teardrop: circle + two tangents meeting at the tip, tip slightly rounded
+     CGFloat d = r * K_DROP_TIP, th = acos(r / d);
+     CGPoint tip = CGPointMake(c.x + d * cos(tipAngle), c.y + d * sin(tipAngle));
+@@ -592,102 +601,8 @@ static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat an
+     for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
+     CGPathCloseSubpath(p); return p;
+ }
+-// The Game style layout's icons: each key drawn as what it does, in strokes (no asset, sharp at any scale), with the button it
+-// stands for in small type under it. A game's own verbs: cast, ward, dodge, jump, Ancient Magic, interact, the spell set wheel, the
+-// next set, the pause menu, the field guide, and a flask for each of the potion wheel's tool slots.
+-static CGPathRef iconWand(CGPoint c, CGFloat r) {   // Basic Cast: a wand, its tip sparkling
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathMoveToPoint(p, NULL, c.x - 0.74 * r, c.y + 0.74 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x - 0.02 * r, c.y + 0.02 * r);
+-    CGPoint t = CGPointMake(c.x + 0.44 * r, c.y - 0.44 * r);
+-    CGPathMoveToPoint(p, NULL, t.x, t.y - 0.50 * r); CGPathAddLineToPoint(p, NULL, t.x, t.y + 0.50 * r);
+-    CGPathMoveToPoint(p, NULL, t.x - 0.50 * r, t.y); CGPathAddLineToPoint(p, NULL, t.x + 0.50 * r, t.y);
+-    return p;
+-}
+-static CGPathRef iconWard(CGPoint c, CGFloat r) {   // Protego: a curved ward, and the spell come to nothing at it
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathAddArc(p, NULL, c.x + 0.34 * r, c.y, 0.76 * r, M_PI * 0.60, M_PI * 1.40, false);
+-    CGPathMoveToPoint(p, NULL, c.x - 0.96 * r, c.y - 0.96 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x - 0.36 * r, c.y - 0.36 * r);
+-    CGPoint t = CGPointMake(c.x - 0.62 * r, c.y - 0.62 * r);
+-    CGPathMoveToPoint(p, NULL, t.x, t.y - 0.20 * r); CGPathAddLineToPoint(p, NULL, t.x, t.y + 0.20 * r);
+-    CGPathMoveToPoint(p, NULL, t.x - 0.20 * r, t.y); CGPathAddLineToPoint(p, NULL, t.x + 0.20 * r, t.y);
+-    return p;
+-}
+-static CGPathRef iconDodge(CGPoint c, CGFloat r) {   // a dodge: two chevrons, the way the character rolls aside
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = 0; i < 2; i++) { CGFloat x = c.x + (i * 0.54 - 0.28) * r;
+-        CGPathMoveToPoint(p, NULL, x - 0.22 * r, c.y - 0.62 * r);
+-        CGPathAddLineToPoint(p, NULL, x + 0.38 * r, c.y);
+-        CGPathAddLineToPoint(p, NULL, x - 0.22 * r, c.y + 0.62 * r); }
+-    return p;
+-}
+-static CGPathRef iconJump(CGPoint c, CGFloat r) {   // a jump: an up chevron over the ground it left
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathMoveToPoint(p, NULL, c.x - 0.62 * r, c.y + 0.02 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x, c.y - 0.66 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x + 0.62 * r, c.y + 0.02 * r);
+-    CGPathMoveToPoint(p, NULL, c.x - 0.70 * r, c.y + 0.60 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x + 0.70 * r, c.y + 0.60 * r);
+-    return p;
+-}
+-static CGPathRef iconBurst(CGPoint c, CGFloat r) {   // Ancient Magic: a burst of rays
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = 0; i < 6; i++) { CGFloat a = -M_PI_2 + i * M_PI / 3;
+-        CGPathMoveToPoint(p, NULL, c.x + 0.26 * r * cos(a), c.y + 0.26 * r * sin(a));
+-        CGPathAddLineToPoint(p, NULL, c.x + 0.92 * r * cos(a), c.y + 0.92 * r * sin(a)); }
+-    return p;
+-}
+-static CGPathRef iconHand(CGPoint c, CGFloat r) {   // Interact: a raised finger over the fist (the game's own interact mark)
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathAddRoundedRect(p, NULL, CGRectMake(c.x - 0.19 * r, c.y - 0.96 * r, 0.38 * r, 0.94 * r), 0.19 * r, 0.19 * r);
+-    CGPathAddRoundedRect(p, NULL, CGRectMake(c.x - 0.62 * r, c.y, 1.24 * r, 0.82 * r), 0.30 * r, 0.30 * r);
+-    CGPathMoveToPoint(p, NULL, c.x + 0.30 * r, c.y + 0.14 * r);
+-    CGPathAddQuadCurveToPoint(p, NULL, c.x + 0.62 * r, c.y + 0.22 * r, c.x + 0.50 * r, c.y + 0.60 * r);
+-    return p;
+-}
+-static CGPathRef iconWheel(CGPoint c, CGFloat r) {   // the spell set wheel (L): the rim, and the spell in the middle
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - 0.80 * r, c.y - 0.80 * r, 1.60 * r, 1.60 * r));
+-    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - 0.20 * r, c.y - 0.20 * r, 0.40 * r, 0.40 * r));
+-    return p;
+-}
+-static CGPathRef iconCycle(CGPoint c, CGFloat r) {   // the next spell set (R): round in a circle
+-    CGMutablePathRef p = CGPathCreateMutable(); CGFloat rad = 0.74 * r;
+-    CGPathAddArc(p, NULL, c.x, c.y, rad, -M_PI * 0.86, M_PI * 0.56, false);
+-    CGPoint n = CGPointMake(c.x + rad * cos(M_PI * 0.56), c.y + rad * sin(M_PI * 0.56));
+-    CGPathMoveToPoint(p, NULL, n.x + 0.16 * r, n.y - 0.30 * r);
+-    CGPathAddLineToPoint(p, NULL, n.x - 0.32 * r, n.y - 0.12 * r);
+-    CGPathAddLineToPoint(p, NULL, n.x + 0.08 * r, n.y + 0.24 * r);
+-    return p;
+-}
+-static CGPathRef iconLines(CGPoint c, CGFloat r) {   // the pause menu (+): three lines
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    for (int i = -1; i <= 1; i++) {
+-        CGPathMoveToPoint(p, NULL, c.x - 0.74 * r, c.y + i * 0.46 * r);
+-        CGPathAddLineToPoint(p, NULL, c.x + 0.74 * r, c.y + i * 0.46 * r); }
+-    return p;
+-}
+-static CGPathRef iconMap(CGPoint c, CGFloat r) {   // the field guide (−): a folded map
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGRect m = CGRectMake(c.x - 0.76 * r, c.y - 0.58 * r, 1.52 * r, 1.16 * r);
+-    CGPathAddRect(p, NULL, m);
+-    CGPathMoveToPoint(p, NULL, c.x - 0.25 * r, m.origin.y); CGPathAddLineToPoint(p, NULL, c.x - 0.25 * r, CGRectGetMaxY(m));
+-    CGPathMoveToPoint(p, NULL, c.x + 0.25 * r, m.origin.y); CGPathAddLineToPoint(p, NULL, c.x + 0.25 * r, CGRectGetMaxY(m));
+-    return p;
+-}
+-static CGPathRef iconFlask(CGPoint c, CGFloat r) {   // a tool slot (the potion wheel): the bottle in it
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathMoveToPoint(p, NULL, c.x - 0.34 * r, c.y - 0.94 * r); CGPathAddLineToPoint(p, NULL, c.x + 0.34 * r, c.y - 0.94 * r);   // the cork
+-    CGPathMoveToPoint(p, NULL, c.x - 0.21 * r, c.y - 0.66 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x - 0.21 * r, c.y - 0.16 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x - 0.58 * r, c.y + 0.48 * r);
+-    CGPathAddQuadCurveToPoint(p, NULL, c.x, c.y + 0.98 * r, c.x + 0.58 * r, c.y + 0.48 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x + 0.21 * r, c.y - 0.16 * r);
+-    CGPathAddLineToPoint(p, NULL, c.x + 0.21 * r, c.y - 0.66 * r);
+-    CGPathMoveToPoint(p, NULL, c.x - 0.50 * r, c.y + 0.20 * r); CGPathAddLineToPoint(p, NULL, c.x + 0.50 * r, c.y + 0.20 * r);   // the brew's level
+-    return p;
+-}
++// The Game style layout's glyphs are pictures now (DmPadArt.h), so the strokes that used to draw them are gone
++// with the discs and the engraving: a key costs one CALayer, and nothing is redrawn when the screen changes.
+ static CGPathRef doseRingPath(CGPoint c, CGFloat r, CGFloat len) {   // the potion wheel's rim, and a tick in each gap between its slots
+     CGMutablePathRef p = CGPathCreateMutable();
+     CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r));
+@@ -704,27 +619,8 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+     t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
+     CFRelease(f);
+ }
+-static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { placeLabel(t, CGPointMake(c.x, c.y + dy), fs); }   // a caption under an icon
+-static void placeIcon(CAShapeLayer *l, CGPoint c, CGFloat half, CGFloat dy) {   // an icon of this half-size, centred on c + dy, its stroke in proportion
+-    l.bounds = CGRectMake(0, 0, 2 * half, 2 * half); l.position = CGPointMake(c.x, c.y + dy); l.lineWidth = MAX(1.3, half * 0.17);
+-}
++static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { placeLabel(t, CGPointMake(c.x, c.y + dy), fs); }   // a caption under a glyph
+ 
+-- (CGPathRef)styleGlyph:(int)b half:(CGFloat)h {   // the icon for this key, drawn in the icon layer's own space (the caller releases it)
+-    CGPoint c = CGPointMake(h, h); CGFloat r = h * 0.92;
+-    switch (b) {
+-        case B_ZR: return iconWand(c, r);           // Basic Cast
+-        case B_ZL: return iconWard(c, r);           // Protego
+-        case B_A: return iconDodge(c, r);           // dodge
+-        case B_B: return iconJump(c, r);            // jump
+-        case B_X: return iconBurst(c, r);           // Ancient Magic
+-        case B_Y: return iconHand(c, r);            // interact
+-        case B_L: return iconWheel(c, r);           // the spell set wheel
+-        case B_R: return iconCycle(c, r);           // the next spell set
+-        case B_PLUS: return iconLines(c, r);        // the pause menu
+-        case B_MINUS: return iconMap(c, r);         // the field guide
+-        default: return iconFlask(c, r);            // the potion wheel's four slots
+-    }
+-}
+ - (void)layoutSubviews {
+     [super layoutSubviews];
+     UIWindowScene *ws = self.window.windowScene; if (ws) atomic_store(&g_iface_orient, (int)ws.effectiveGeometry.interfaceOrientation);
+@@ -734,17 +630,20 @@ static void placeIcon(CAShapeLayer *l, CGPoint c, CGFloat half, CGFloat dy) {
+     for (int b = 0; b < B_N; b++) if (_label[b] && _label[b].contentsScale != scale) {
+         _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
+     }
+-    _controls.frame = self.layer.bounds; _deco.frame = self.layer.bounds;
++    _controls.frame = self.layer.bounds;
+     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
+-        setPath(_key[b], circlePath(c, _style ? K_STYLE_FACE_R * u : self.faceR));
+-        if (_style) { CGFloat h = 10.5 * u; setPath(_ico[b], [self styleGlyph:b half:h]); placeIcon(_ico[b], c, h, -5 * u); placeLabelAt(_label[b], c, 11 * u, 13 * u); }
+-        else placeLabel(_label[b], c, 20 * u); }
++        if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
++            placeArt(_art[b], c, K_STYLE_FACE_ART * u);
++            placeLabelAt(_label[b], c, K_STYLE_CAP * u, K_STYLE_FACE_ART * u / 2 + K_STYLE_CAP_GAP * u);
++        } else {
++            setPath(_key[b], circlePath(c, self.faceR));
++            placeLabel(_label[b], c, 20 * u);
++        } }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+-        if (_style && isDrop(b)) {
+-            CGPoint c = [self dropCenter:b]; CGFloat r = [self dropR:b];
+-            if (b == B_ZR) { setPath(_key[b], circlePath(c, r)); setPath(_ico[b], [self styleGlyph:b half:24 * u]); placeIcon(_ico[b], c, 24 * u, -9 * u); placeLabelAt(_label[b], c, 15 * u, 32 * u); }
+-            else if (b == B_ZL) { setPath(_key[b], shieldPath(c, r)); setPath(_ico[b], [self styleGlyph:b half:11.5 * u]); placeIcon(_ico[b], c, 11.5 * u, -8 * u); placeLabelAt(_label[b], c, 12 * u, 20 * u); }
+-            else { setPath(_key[b], hexPath(c, r)); setPath(_ico[b], [self styleGlyph:b half:8 * u]); placeIcon(_ico[b], c, 8 * u, -4 * u); placeLabelAt(_label[b], c, 10 * u, 9.5 * u); }
++        if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
++            CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
++            placeArt(_art[b], c, art);
++            placeLabelAt(_label[b], c, K_STYLE_CAP * u, art / 2 + K_STYLE_CAP_GAP * u);
+         } else if (isDrop(b)) {
+             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
+             setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
+@@ -752,36 +651,36 @@ static void placeIcon(CAShapeLayer *l, CGPoint c, CGFloat half, CGFloat dy) {
+             CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
+         } else {
+             CGRect rc = [self pillRect:b];
+-            setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL));
+-            if (_style) {   // the icon on the left of the pill, the sign on the right: what it opens, and which key that is
+-                CGFloat h = 8.5 * u, my = CGRectGetMidY(rc);
+-                setPath(_ico[b], [self styleGlyph:b half:h]); placeIcon(_ico[b], CGPointMake(CGRectGetMinX(rc) + 0.30 * rc.size.width, my), h, 0);
+-                placeLabel(_label[b], CGPointMake(CGRectGetMinX(rc) + 0.68 * rc.size.width, my), 13 * u);
+-            } else placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+-        }
+-    }
++            if (_style) {   // map / pause: the glyph over the sign it stands for, both inside the pill's target
++                CGFloat my = CGRectGetMidY(rc);
++                placeArt(_art[b], CGPointMake(CGRectGetMidX(rc), my - 0.18 * rc.size.height), K_STYLE_PILL_ART * u);
++                placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), my + 0.26 * rc.size.height), 11 * u);
++            } else {
++                setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL));
++                placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
++            }
++        } }
+     if (!_style) {   // the D-pad: the 3D layout only
+         static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
+         for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+-    } else {   // the potion wheel: four slots on its rim, a flask in each and the direction under it
++    } else {   // the potion wheel: four slots on its rim, a flask in each and the potion named under it
+         static const int slot[4] = {B_UP, B_RIGHT, B_DOWN, B_LEFT};   // from the top, round
+-        CGPoint c = self.dpadCenter; CGFloat r = self.dpadR, h = 7.5 * u;
++        CGPoint c = self.dpadCenter; CGFloat r = self.dpadR, art = K_STYLE_DOSE_ART * u;
++        setPath(_doseRing, doseRingPath(c, r, 7 * u));
+         for (int i = 0; i < 4; i++) { double a = -M_PI_2 + i * M_PI_2;
+             CGPoint here = CGPointMake(c.x + r * cos(a), c.y + r * sin(a));
+-            setPath(_key[slot[i]], circlePath(here, K_STYLE_DOSE_KEY_R * u));
+-            setPath(_ico[slot[i]], [self styleGlyph:slot[i] half:h]); placeIcon(_ico[slot[i]], here, h, -3.5 * u);
+-            placeLabelAt(_label[slot[i]], here, 9 * u, 8.5 * u); }
++            placeArt(_art[slot[i]], here, art);
++            // the name goes outward along the slot's own radius, so each one sits under its own flask and the
++            // four of them never share a line: inside the rim they collided in the middle of the wheel.
++            CGFloat out = r + art / 2 + K_STYLE_CAP_GAP * 1.6 * u;   // clear of the flask's widest point, cork included
++            placeLabel(_label[slot[i]], CGPointMake(c.x + out * cos(a), c.y + out * sin(a)), K_STYLE_DOSE_CAP * u); }
+     }
+     CGFloat mr = K_MENU_R * u; CGPoint mc = self.menuCenter;
+     _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
+     _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
+     [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
+-    if (_style) {   // the engraving: ticks round the wand ring, three runs round the spell seal, the potion wheel's rim
+-        setPath(_decoTicks, ticksPath(self.stickHome, [self stickR:0] * 0.94, 16, 9 * u));
+-        setPath(_decoSeal, arcRunPath([self dropCenter:B_ZR], K_STYLE_CAST_R * u * 1.2, 3, 1.30, 0.52));
+-        setPath(_decoDose, doseRingPath(self.dpadCenter, self.dpadR, 6 * u));
+-    }
++    _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
+     CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     setPath(_knob, circlePath(CGPointMake(k, k), k));
+     CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+@@ -790,17 +689,20 @@ static void placeIcon(CAShapeLayer *l, CGPoint c, CGFloat half, CGFloat dy) {
+     [self refresh];
+ }
+ - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
+-- (void)refresh {   // pressed state → fill, sticks → knob position
++- (void)refresh {   // pressed state → fill or a lit glyph, sticks → knob position
+     uint64_t all = _faceBits | _dpadBits | _btnBits;
+     UIColor *idle = _style ? k_sIdle : k_idle, *on = _style ? k_sOn : k_on;
+     UIColor *text = _style ? k_sText : k_text, *textOn = _style ? k_sTextOn : k_textOn, *line = _style ? k_sLine : k_line;
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+     for (int b = 0; b < B_N; b++) { BOOL lit = (all >> b) & 1;
+         _key[b].fillColor = (lit ? on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (lit ? textOn : text).CGColor;
+-        _ico[b].strokeColor = (lit ? textOn : text).CGColor; }
++        if (_art[b]) {   // a picture cannot take a fill: a press brightens it and pulls it in
++            _art[b].opacity = lit ? K_STYLE_LIT : K_STYLE_IDLE;
++            CGFloat s = lit ? K_STYLE_PRESS : 1;
++            _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
+     CGPoint h = self.stickHome, o = [self knobOffset:0];
+     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
+-    _ring.strokeColor = line.CGColor; _decoTicks.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor; _decoSeal.strokeColor = k_sLine.CGColor; _decoDose.strokeColor = k_sLine.CGColor;
++    _ring.strokeColor = line.CGColor; _doseRing.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor;
+     [CATransaction commit];
+ }
+ 
+diff --git a/dm/ios/Sources/DmPadArt.h b/dm/ios/Sources/DmPadArt.h
+new file mode 100644
+index 0000000..0e429fa
+--- /dev/null
++++ b/dm/ios/Sources/DmPadArt.h
+@@ -0,0 +1,38 @@
++// DmPadArt.h: the Game style layout's key glyphs (DmGamepad.m), as the artwork ComfyUI drew for them.
++//   Generated by work/pad_tex/emit_art.py: rerun it instead of editing this file or the table below.
++#ifndef DM_PAD_ART_H
++#define DM_PAD_ART_H
++
++#include <CoreGraphics/CoreGraphics.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum {
++    DM_ART_CAST = 0,   // the seal in the bottom-right corner: Basic Cast
++    DM_ART_WARD = 1,   // the shield inward of it: Protego
++    DM_ART_DODGE = 2,   // A: dodge roll
++    DM_ART_ANCIENT = 3,   // X: Ancient Magic
++    DM_ART_INTERACT = 4,   // Y: interact
++    DM_ART_JUMP = 5,   // B: jump
++    DM_ART_SETWHEEL = 6,   // L: the spell set wheel
++    DM_ART_CYCLE = 7,   // R: the next spell set
++    DM_ART_PAUSE = 8,   // plus: the pause menu
++    DM_ART_MAP = 9,   // minus: the field guide
++    DM_ART_VIAL_HEAL = 10,   // potion wheel up: healing
++    DM_ART_VIAL_FOCUS = 11,   // potion wheel left: focus
++    DM_ART_VIAL_POWER = 12,   // potion wheel down: power
++    DM_ART_VIAL_GUARD = 13,   // potion wheel right: guard,
++    DM_ART_N
++};
++
++// The glyph for one key: a 320 px PNG decoded once, kept for the life of the process (a CALayer wants a
++// CGImage that outlives the transaction). NULL only if the table itself is malformed, which the unit test
++// checks; the pad then draws its keys without art rather than failing to start.
++CGImageRef dm_pad_art(int which);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/dm/ios/Sources/DmPadArt.m b/dm/ios/Sources/DmPadArt.m
+new file mode 100644
+index 0000000..b4efbef
+--- /dev/null
++++ b/dm/ios/Sources/DmPadArt.m
+@@ -0,0 +1,1238 @@
++// DmPadArt.m: the pad's artwork, decoded on first use. Generated by work/pad_tex/emit_art.py.
++//
++//   What these are: one glyph per key, each drawn by Qwen-Image 2.1 (the local ComfyUI) as a wizarding-world
++//   sigil in gold line art, then keyed to alpha, thickened, given a dark edge and put on one optical size, so
++//   a ring and a chevron read as one set. The edge is painted under the stroke, not around the tile: this
++//   game's opening scene is nearly white, a thin gold line on white disappears without it, and a halo behind
++//   the whole tile — the first bake — turned into a grey square there, which was worse than no art at all.
++//
++//   Base64 in the source, not files in the bundle: a source file needs no project.yml entry and no asset
++//   catalog, so the art travels with the pad code through the same patch.
++#import "DmPadArt.h"
++
++#import <Foundation/Foundation.h>
++#import <ImageIO/ImageIO.h>   // CGImageSource*: the PNGs are decoded by CoreGraphics, not by a bundled loader
++
++static const char *const k_cast =
++    "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"
++    "AgW6ffp/GnJsNd18s/sAAAAASUVORK5CYII=";
++
++static const char *const k_ward =
++    "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"
++    "4v88VrjtfqQE2gAAAABJRU5ErkJggg==";
++
++static const char *const k_dodge =
++    "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";
++
++static const char *const k_ancient =
++    "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";
++
++static const char *const k_interact =
++    "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";
++
++static const char *const k_jump =
++    "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";
++
++static const char *const k_setwheel =
++    "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"
++    "B/lnryfhep62AAAAAElFTkSuQmCC";
++
++static const char *const k_cycle =
++    "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";
++
++static const char *const k_pause =
++    "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"
++    "q1XJFsxRGrOJCgX+Ga7a5c2ugMEmbTK2V5vAJCbwL9lsNjYMZzaNGqMla9sovoBYEJDZAgVuRB/T3W4Vc89ZHJmS2Ekdj1hd"
++    "9xGsbmJ12UrYZpiVDLeA79Y3BjdBuvYdSwI6y+VqevV6E/PKiP++zHhjvb+/f4m4TTtqKcy28r5aovXWbcpvK5jxEFuE3ZZV"
++    "llR6eamaexP/fv39O3JOm01XvhUB/QU3Y/v5c5Y6zom1Fs1wi8o2/LmNbN/yll1GtSoKpracnSG73cfHx273D3PRm+0dGwIu"
++    "p/xg8BZtZNWlYddV6Ffo+BVWqSqrnOcz98X93rciILv++aJVIvkRsDW9WJYeY9SPp3QvL9UTc+CR65Y+HLvSo1VWMGfXeyIC"
++    "WueEmvN5CtjOU7iT/YEZUyoNAYs6e7rnSTUwF7DTHdFSTyW9DtW0iN1QVXHpNxHQbtxElXd8tCKyFWQKanfEVngnAmy81gQ6"
++    "AsJYrpIpFVy9qsbGUINjyq7j1oMLyUXtm3oFD4eBqRJNwFJftE4GrHL9DtQAS1Vk76SDhIHSowNFwMPopGPvBQ+uhgP4eYCv"
++    "R8xwuAAFmSNej+ZK5Y1AHp7vhcw3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAtIT/AXqMQlE1la1i"
++    "AAAAAElFTkSuQmCC";
++
++static const char *const k_map =
++    "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";
++
++static const char *const k_vial_heal =
++    "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";
++
++static const char *const k_vial_focus =
++    "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";
++
++static const char *const k_vial_power =
++    "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"
++    "5tcZWf1SJsjntm19dbSzou/k7O8R+Gx/WkrP74au26Ud62WCWmjZ9jktvEjM2BDfiFJu3jF+efJWJigQpimDvlC/Eh/3hPZZ"
++    "5XgkCuxBp/hlW5qrCGZamPrzr1gNT2LEv+AsxRfbFfjyhU0d41fZeT8oUZr6s5/lGKqXvKHk+Sw/U19eVdQMRx3Ed5KgcGOZ"
++    "JvmzILzQH/Kll9gZ9UoHOu5I/XFhOrMzxjCwmG3bzPLikJ/DyMPgyXhMU5vNAl6dRN51F99pJdyplcV82/eZYc29YLkMHzg3"
++    "d8I5D8M4mFrGo9C8NEqmS37CS3ZZ/Y5NZP2MfnmWwfxIaKMd+Rt2kM3G97P/Zj8mlrd8cE7WMHdd57dr5UkIpeDKw2XgPVlJ"
++    "YrDnZ8aeM4KJNZsKtTzrJXf43I4DzMrTSi08qZbOZZGlJ/iOdyGrDPniNLpc3OX4ekKvONI46QwrC+DTRbGet7MHfZPTvdHr"
++    "ZH+g0kfZ9ZfHeh14h3OAvkrWK80hXq2K+r7v2md6QBGv1MSs879r/Q9I8iMPd9e3H95dJLtuv9uXpIWEhISEhISEhISEhISE"
++    "hISEhORW8n8SuwyjoSxHNAAAAABJRU5ErkJggg==";
++
++static const char *const k_vial_guard =
++    "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"
++    "RK5CYII=";
++
++static const char *const k_b64[DM_ART_N] = {   // after the strings it names: a table above them would not compile
++    k_cast,
++    k_ward,
++    k_dodge,
++    k_ancient,
++    k_interact,
++    k_jump,
++    k_setwheel,
++    k_cycle,
++    k_pause,
++    k_map,
++    k_vial_heal,
++    k_vial_focus,
++    k_vial_power,
++    k_vial_guard,
++};
++
++CGImageRef dm_pad_art(int which) {
++    static CGImageRef art[DM_ART_N];
++    static dispatch_once_t once;
++    if (which < 0 || which >= DM_ART_N) return NULL;
++    dispatch_once(&once, ^{
++        for (int i = 0; i < DM_ART_N; i++) {
++            const char *b64 = k_b64[i];
++            if (!b64) continue;
++            NSData *png = [[NSData alloc] initWithBase64EncodedString:@(b64) options:0];
++            if (!png) continue;
++            CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)png, NULL);
++            if (!src) continue;
++            CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, NULL);
++            CFRelease(src);
++            art[i] = img;   // kept for the life of the process: CALayer.contents holds it
++        }
++    });
++    return art[which];
++}
