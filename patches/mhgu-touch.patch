@@ -28991,7 +28991,7 @@ index 0000000..8231969
 +int hunter_touch_take_menu(void);
 diff --git a/runtime/touch_hunter.m b/runtime/touch_hunter.m
 new file mode 100644
-index 0000000..7c765ee
+index 0000000..5623376
 --- /dev/null
 +++ b/runtime/touch_hunter.m
 @@ -0,0 +1,115 @@
@@ -29095,7 +29095,7 @@ index 0000000..7c765ee
 +- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftTouch=nil; if(t==cameraTouch)cameraTouch=nil; [owners removeObjectForKey:t];} [self publish]; }
 +- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self touchesEnded:touches withEvent:event]; }
 +- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)event {
-+    if (overlay_menu_open()) { Key k=keys[count-1]; if(hypot(p.x-k.x,p.y-k.y)>MAX(k.r*1.2,22)) return nil; }
++    if (overlay_menu_open() && count>0) { Key k=keys[count-1]; if(hypot(p.x-k.x,p.y-k.y)>MAX(k.r*1.2,22)) return nil; }
 +    return [super hitTest:p withEvent:event];
 +}
 +@end

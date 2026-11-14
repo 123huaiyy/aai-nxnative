@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: WiseManChris/MHGURecomp-iOS
-          ref: fc034a0a9f53
+          ref: fc034a0a9f53ac21165f0db032329b3272e01caf
           path: source
           submodules: recursive
       - name: Apply hunter touch controls
