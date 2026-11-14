@@ -1,0 +1,135 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build MHGURecomp for iOS / iPadOS
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@v4
+        with:
+          path: ci
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: WiseManChris/MHGURecomp-iOS
+          ref: fc034a0a9f53
+          path: source
+          submodules: recursive
+      - name: Apply hunter touch controls
+        run: git apply "$GITHUB_WORKSPACE/ci/patches/mhgu-touch.patch"
+
+      - name: Cache prebuilt iOS dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: source/deps
+          key: ios-deps-macos-14-deps-v2
+
+      - name: Setup iOS Dependencies (MoltenVK, SDL3, Shaderc)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p deps/lib deps/include
+          NCPU=$(sysctl -n hw.ncpu)
+
+          echo "=== 1. Downloading MoltenVK for iOS ==="
+          curl -fL -o MoltenVK-ios.tar https://github.com/KhronosGroup/MoltenVK/releases/download/v1.3.0/MoltenVK-ios.tar
+          tar -xf MoltenVK-ios.tar
+          cp MoltenVK/MoltenVK/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a deps/lib/libMoltenVK.a
+          cp -r MoltenVK/MoltenVK/include/* deps/include/
+          rm -rf MoltenVK MoltenVK-ios.tar
+
+          echo "=== 2. Building SDL3 for iOS ==="
+          git clone --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL.git sdl3-src
+          cmake -S sdl3-src -B sdl3-build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_INSTALL_PREFIX=$PWD/sdl3-install \
+            -DSDL_STATIC=ON \
+            -DSDL_SHARED=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_TEST_LIBRARY=OFF
+          cmake --build sdl3-build --target install --config Release -j$NCPU
+          cp sdl3-install/lib/libSDL3.a deps/lib/libSDL3.a
+          cp -r sdl3-install/include/* deps/include/
+          rm -rf sdl3-src sdl3-build sdl3-install
+
+          echo "=== 3. Building Shaderc for iOS ==="
+          git clone --depth 1 https://github.com/google/shaderc.git shaderc-src
+          cd shaderc-src
+          python3 utils/git-sync-deps
+          cmake -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSHADERC_SKIP_TESTS=ON \
+            -DSHADERC_SKIP_EXAMPLES=ON \
+            -DSHADERC_SKIP_COPYRIGHT_CHECK=ON
+          cmake --build build --target shaderc_combined --config Release -j$NCPU
+          find build -name "libshaderc_combined.a" -exec cp {} ../deps/lib/libshaderc_combined.a \;
+          cp -r libshaderc/include/* ../deps/include/
+          cd ..
+          rm -rf shaderc-src
+
+          echo "=== Dependencies setup complete ==="
+          ls -lh deps/lib/
+          ls -lh deps/include/
+
+      - name: Build MHGURecomp iOS Binary
+        run: |
+          NCPU=$(sysctl -n hw.ncpu)
+          echo "Building on macos-14 with $NCPU cores..."
+          make -j$NCPU DEPS=deps PLATFORM=darwin STATIC_GAMELIB=1 FFMPEG=none GENARCH=""
+          file build/MHGURecomp
+
+      - name: Package .app and .ipa Bundle
+        run: |
+          APP_DIR="Payload/MHGURecomp.app"
+          mkdir -p "$APP_DIR"
+
+          # Copy main executable
+          cp build/MHGURecomp "$APP_DIR/MHGURecomp"
+
+          # Copy plists and icons
+          cp ios/Info.plist "$APP_DIR/Info.plist"
+          cp ios/Entitlements.plist "$APP_DIR/Entitlements.plist"
+          cp ios/Icon.png "$APP_DIR/Icon.png"
+          cp ios/hunter-glyphs-atlas.png "$APP_DIR/hunter-glyphs-atlas.png"
+          cp ios/Icon.png "$APP_DIR/AppIcon60x60@2x.png"
+          cp ios/Icon.png "$APP_DIR/AppIcon76x76@2x~ipad.png"
+
+          # Strip debug symbols to optimize size
+          xcrun strip -S "$APP_DIR/MHGURecomp"
+
+          # Clear extended attributes before signing
+          xattr -cr "$APP_DIR" 2>/dev/null || true
+
+          # Ad-hoc sign ONLY the inner executable with increased-memory-limit entitlement
+          # (Sideloaders like iloader, SideStore, and AltStore read entitlements from the binary
+          # and re-sign the whole .app bundle on-device using the user's free Apple ID certificate).
+          codesign --force --sign - --entitlements ios/Entitlements.plist "$APP_DIR/MHGURecomp"
+
+          # Verify binary signature and entitlements
+          codesign -dvvv --entitlements :- "$APP_DIR/MHGURecomp"
+
+          # Remove bundle-level _CodeSignature so sideloaders can cleanly sign on-device
+          rm -rf "$APP_DIR/_CodeSignature"
+
+          # Create IPA archive
+          zip -r9 MHGURecomp.ipa Payload
+          ls -lh MHGURecomp.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MHGURecomp-iOS-ipa
+          path: source/MHGURecomp.ipa
+          retention-days: 14
