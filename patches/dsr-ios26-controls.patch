@@ -79,7 +79,7 @@ index 784727b..05915fe 100644
  void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
  bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 1f2040e..5624eca 100644
+index 1f2040e..92dd7b6 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
 @@ -1,15 +1,17 @@
@@ -133,17 +133,17 @@ index 1f2040e..5624eca 100644
 +    K_STYLE_DPAD_ART = 18, K_STYLE_DPAD_CAP = 7.8,
 +    K_STYLE_LIGHT_R = 39, K_STYLE_HEAVY_R = 31, K_STYLE_GUARD_R = 25,
 +    K_STYLE_LIGHT_ART = 36, K_STYLE_HEAVY_ART = 29, K_STYLE_GUARD_ART = 23,
-+    K_STYLE_FACE_A_X = 205, K_STYLE_FACE_A_Y = 110,
-+    K_STYLE_FACE_B_X = 300, K_STYLE_FACE_B_Y = 210,
-+    K_STYLE_FACE_X_X = 205, K_STYLE_FACE_X_Y = 300,
-+    K_STYLE_FACE_Y_X = 95, K_STYLE_FACE_Y_Y = 280,
-+    K_STYLE_HEAVY_X = 132, K_STYLE_HEAVY_Y = 176,
-+    K_STYLE_LIGHT_X = 78, K_STYLE_LIGHT_Y = 82,
++    K_STYLE_FACE_A_X = 170, K_STYLE_FACE_A_Y = 83,
++    K_STYLE_FACE_B_X = 240, K_STYLE_FACE_B_Y = 91,
++    K_STYLE_FACE_X_X = 238, K_STYLE_FACE_X_Y = 190,
++    K_STYLE_FACE_Y_X = 165, K_STYLE_FACE_Y_Y = 195,
++    K_STYLE_HEAVY_X = 90, K_STYLE_HEAVY_Y = 195,
++    K_STYLE_LIGHT_X = 82, K_STYLE_LIGHT_Y = 88,
 +    K_STYLE_SLOT_GRAB = 1.8,
 +    K_STYLE_PILL_W = 70, K_STYLE_PILL_H = 36,
 +    K_STYLE_PILL_DX = 58, K_STYLE_PILL_Y = 24, K_STYLE_PILL_ART = 24,
 +    K_STYLE_CAP = 9.5, K_STYLE_CAP_GAP = 7,
-+    K_STYLE_IDLE = 0.96, K_STYLE_LIT = 1.0,         // glyph brightness at rest and under a finger
++    K_STYLE_IDLE = 0.88, K_STYLE_LIT = 1.0,         // glyph brightness at rest and under a finger
 +    K_STYLE_PRESS = 0.92;                           // and how far it shrinks when pressed
 +static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 in 3D and game-style layouts)
 +static NSString *const k_styleNames[B_N] = {@"翻滚 A", @"互动 B", @"单双持 X", @"道具 Y", @"L3", @"锁定 R3", @"格挡 L", @"轻击 R", @"弹反 ZL", @"重击 ZR", @"菜单 +", @"手势 −", @"左手 ◀", @"法术 ▲", @"右手 ▶", @"道具 ▼"};
@@ -227,8 +227,8 @@ index 1f2040e..5624eca 100644
              // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
              k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
              k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
-+            k_sLine = [UIColor colorWithRed:0.52 green:0.38 blue:0.20 alpha:0.92]; k_sLineHot = [UIColor colorWithRed:1 green:0.34 blue:0.10 alpha:0.98];
-+            k_sIdle = [UIColor colorWithRed:0.055 green:0.052 blue:0.048 alpha:0.94]; k_sOn = [UIColor colorWithRed:0.48 green:0.17 blue:0.055 alpha:0.96];
++            k_sLine = [UIColor colorWithRed:0.67 green:0.54 blue:0.34 alpha:0.62]; k_sLineHot = [UIColor colorWithRed:1 green:0.34 blue:0.10 alpha:0.9];
++            k_sIdle = [UIColor colorWithRed:0.055 green:0.052 blue:0.048 alpha:0.30]; k_sOn = [UIColor colorWithRed:0.48 green:0.17 blue:0.055 alpha:0.56];
 +            k_sText = [UIColor colorWithRed:0.90 green:0.84 blue:0.70 alpha:0.98]; k_sTextOn = [UIColor colorWithRed:1 green:0.93 blue:0.77 alpha:1.0];
          });
          _controls = [CALayer layer]; [self.layer addSublayer:_controls];
