@@ -13116,7 +13116,7 @@ index 1f3ad5b..35e63fe 100644
      var placed = false
      if let m = gameMenuModel {
 diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
-index 7cd198e..adb2fc8 100644
+index 7cd198e..512cbfa 100644
 --- a/dm/ios/Sources/main.m
 +++ b/dm/ios/Sources/main.m
 @@ -168,6 +168,10 @@ static int boot_env(void) {
@@ -13130,6 +13130,20 @@ index 7cd198e..adb2fc8 100644
      front_hud_env();   // an env file's DM_METAL_HUD; nothing in this process makes a Metal device before startGame (front_ios.m), which applies the launcher's
      // Game language (nn::oe::GetDesiredLanguage, hle_oe.c): the one the IPA was packed with (the NSP script's LANGUAGE / --language → DMLanguage in Info.plist), unless an env file sets DM_LANG
      // (or the launcher, which replaces this default before the game starts)
+@@ -217,6 +221,13 @@ static NSString *program_env(void) {
+     }
+     NSString *romfs = romfs_locate(prog);
+     if (!romfs) return nil;
++    // Rise's shader library is several gigabytes. Keep it beside the game data
++    // in Documents/msl so sideloaders do not need to install a multi-GB IPA.
++    if (!plist) {
++        NSString *external = [doc stringByAppendingPathComponent:@"msl"];
++        BOOL isDir = NO;
++        if ([fm fileExistsAtPath:external isDirectory:&isDir] && isDir) msl = external;
++    }
+     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
+     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
+     setenv("DM_NVN_SHMAP", [dmdir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
 diff --git a/dm/tools/romfs.py b/dm/tools/romfs.py
 index ae1dbfb..aef8813 100644
 --- a/dm/tools/romfs.py
