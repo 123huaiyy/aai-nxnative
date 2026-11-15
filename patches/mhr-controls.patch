@@ -114,7 +114,7 @@ index 784727b..05915fe 100644
  void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
  bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 1f2040e..4db9e79 100644
+index 1f2040e..56e810d 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
 @@ -1,15 +1,17 @@
@@ -170,14 +170,14 @@ index 1f2040e..4db9e79 100644
 +    K_STYLE_FACE_R = 25, K_STYLE_FACE_ART = 24,
 +    K_STYLE_SLOT_OFFSET = 53, K_STYLE_SLOT_W = 38, K_STYLE_SLOT_H = 40, K_STYLE_SLOT_Y = 96,
 +    K_STYLE_DPAD_ART = 18, K_STYLE_DPAD_CAP = 7.8,
-+    K_STYLE_LIGHT_R = 39, K_STYLE_HEAVY_R = 31, K_STYLE_GUARD_R = 25,
-+    K_STYLE_LIGHT_ART = 36, K_STYLE_HEAVY_ART = 29, K_STYLE_GUARD_ART = 23,
++    K_STYLE_LIGHT_R = 27, K_STYLE_HEAVY_R = 31, K_STYLE_GUARD_R = 25,
++    K_STYLE_LIGHT_ART = 25, K_STYLE_HEAVY_ART = 29, K_STYLE_GUARD_ART = 23,
 +    K_STYLE_FACE_A_X = 160, K_STYLE_FACE_A_Y = 150,
 +    K_STYLE_FACE_B_X = 160, K_STYLE_FACE_B_Y = 72,
 +    K_STYLE_FACE_X_X = 78, K_STYLE_FACE_X_Y = 82,
 +    K_STYLE_FACE_Y_X = 238, K_STYLE_FACE_Y_Y = 78,
 +    K_STYLE_HEAVY_X = 90, K_STYLE_HEAVY_Y = 195,
-+    K_STYLE_LIGHT_X = 82, K_STYLE_LIGHT_Y = 88,
++    K_STYLE_LIGHT_X = 82, K_STYLE_LIGHT_Y = 190,
 +    K_STYLE_SLOT_GRAB = 1.8,
 +    K_STYLE_PILL_W = 70, K_STYLE_PILL_H = 36,
 +    K_STYLE_PILL_DX = 58, K_STYLE_PILL_Y = 24, K_STYLE_PILL_ART = 24,
