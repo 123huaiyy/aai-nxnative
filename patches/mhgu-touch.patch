@@ -29016,10 +29016,10 @@ index 0000000..8231969
 +int hunter_touch_take_menu(void);
 diff --git a/runtime/touch_hunter.m b/runtime/touch_hunter.m
 new file mode 100644
-index 0000000..4d42e06
+index 0000000..f7e52e2
 --- /dev/null
 +++ b/runtime/touch_hunter.m
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,129 @@
 +#import <UIKit/UIKit.h>
 +#import <SDL3/SDL.h>
 +#include <pthread.h>
@@ -29040,8 +29040,8 @@ index 0000000..4d42e06
 +@end
 +@implementation HunterPad {
 +    NSMapTable<UITouch *, NSNumber *> *owners;
-+    UITouch *leftTouch, *cameraTouch, *artTouch;
-+    CGPoint leftPoint, cameraStart, cameraPoint, artPoint;
++    UITouch *leftTouch, *cameraTouch;
++    CGPoint leftPoint, cameraStart, cameraPoint;
 +    Key keys[18]; int count;
 +    CGFloat scale, width, height, leftEdge, rightEdge;
 +    UIImage *atlas;
@@ -29070,6 +29070,10 @@ index 0000000..4d42e06
 +    ADD(leftEdge+43*s,43*s,23*s,BIT(BTN_L),6,@"视角 L");
 +    ADD(leftEdge+43*s,106*s,23*s,BIT(BTN_ZL),6,@"锁定 ZL");
 +    ADD(rightEdge-40*s,43*s,23*s,BIT(BTN_ZR),5,@"ZR");
++    ADD(leftEdge+220*s,b-145*s,21*s,BIT(BTN_UP),9,@"狩技 ↑");
++    ADD(leftEdge+172*s,b-97*s,21*s,BIT(BTN_LEFT),9,@"狩技 ←");
++    ADD(leftEdge+268*s,b-97*s,21*s,BIT(BTN_RIGHT),9,@"狩技 →");
++    ADD(leftEdge+220*s,b-49*s,21*s,BIT(BTN_DOWN),9,@"↓");
 +    ADD(width/2-46*s,27*s,19*s,BIT(BTN_MINUS),12,@"特殊 −");
 +    ADD(width/2+46*s,27*s,19*s,BIT(BTN_PLUS),14,@"菜单 +");
 +    ADD(width/2+100*s,27*s,19*s,0,15,@"模组");
@@ -29097,18 +29101,12 @@ index 0000000..4d42e06
 +    if(leftTouch) { CGFloat dx=leftPoint.x-c.x,dy=leftPoint.y-c.y,d=hypot(dx,dy),limit=40*scale; if(d>limit){dx*=limit/d;dy*=limit/d;} knob=CGPointMake(c.x+dx,c.y+dy); }
 +    CGFloat kr=22*scale; CGContextSetFillColorWithColor(ctx,[UIColor colorWithRed:0.78 green:0.65 blue:0.43 alpha:0.40].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(knob.x-kr,knob.y-kr,2*kr,2*kr));
 +    CGContextSetStrokeColorWithColor(ctx,[UIColor colorWithRed:0.90 green:0.78 blue:0.58 alpha:0.78].CGColor); CGContextStrokeEllipseInRect(ctx,CGRectMake(knob.x-kr,knob.y-kr,2*kr,2*kr));
-+    CGPoint ac=CGPointMake(leftEdge+220*scale,height-100*scale), ap=ac; CGFloat ar=35*scale;
-+    CGContextSetFillColorWithColor(ctx,[UIColor colorWithWhite:0.04 alpha:0.30].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(ac.x-ar,ac.y-ar,2*ar,2*ar)); CGContextStrokeEllipseInRect(ctx,CGRectMake(ac.x-ar,ac.y-ar,2*ar,2*ar));
-+    if(artTouch) { CGFloat dx=artPoint.x-ac.x,dy=artPoint.y-ac.y,d=hypot(dx,dy),limit=20*scale; if(d>limit){dx*=limit/d;dy*=limit/d;} ap=CGPointMake(ac.x+dx,ac.y+dy); }
-+    CGFloat abr=12*scale; CGContextSetFillColorWithColor(ctx,[UIColor colorWithRed:0.78 green:0.65 blue:0.43 alpha:0.60].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(ap.x-abr,ap.y-abr,2*abr,2*abr));
-+    NSString *title=@"狩技 ↑↓←→"; CGSize ts=[title sizeWithAttributes:attrs]; [title drawAtPoint:CGPointMake(ac.x-ts.width/2,ac.y+ar+2*scale) withAttributes:attrs];
 +}
 +- (void)publish {
 +    uint64_t m=0; int a[4]={0};
 +    for (UITouch *t in owners) { int idn=[[owners objectForKey:t] intValue]; if(idn>=0 && idn<count) m|=keys[idn].mask; }
 +    if(leftTouch) { CGPoint c=CGPointMake(leftEdge+76*scale,height-77*scale); CGFloat dx=(leftPoint.x-c.x)/(48*scale),dy=(c.y-leftPoint.y)/(48*scale),len=hypot(dx,dy); if(len>1)dx/=len,dy/=len; if(len>0.1)a[0]=dx*32767,a[1]=dy*32767; }
 +    if(cameraTouch) { CGFloat dx=(cameraPoint.x-cameraStart.x)/(55*scale),dy=(cameraStart.y-cameraPoint.y)/(55*scale); a[2]=fmax(-1,fmin(1,dx))*32767; a[3]=fmax(-1,fmin(1,dy))*32767; }
-+    if(artTouch) { CGPoint c=CGPointMake(leftEdge+220*scale,height-100*scale); CGFloat dx=artPoint.x-c.x,dy=artPoint.y-c.y; if(hypot(dx,dy)>10*scale) { if(fabs(dx)>fabs(dy)) m|=BIT(dx>0?BTN_RIGHT:BTN_LEFT); else m|=BIT(dy>0?BTN_DOWN:BTN_UP); } }
 +    pthread_mutex_lock(&mu); buttons=m; memcpy(axes,a,sizeof a); pthread_mutex_unlock(&mu);
 +}
 +- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -29117,15 +29115,13 @@ index 0000000..4d42e06
 +        for(int i=0;i<count;i++){ Key k=keys[i]; CGFloat d=hypot(p.x-k.x,p.y-k.y)/MAX(k.r*1.2,22); if(d<bd)best=i,bd=d; }
 +        if(best>=0){ if(keys[best].mask==0){ pthread_mutex_lock(&mu); menuRequested=1; pthread_mutex_unlock(&mu); } else [owners setObject:@(best) forKey:t]; continue;}
 +        CGPoint c=CGPointMake(leftEdge+76*scale,height-77*scale);
-+        CGPoint ac=CGPointMake(leftEdge+220*scale,height-100*scale);
-+        if(!artTouch && hypot(p.x-ac.x,p.y-ac.y)<44*scale){artTouch=t;artPoint=p;[owners setObject:@(-3) forKey:t];}
-+        else if(!leftTouch && hypot(p.x-c.x,p.y-c.y)<80*scale){leftTouch=t;leftPoint=p;[owners setObject:@(-1) forKey:t];}
++        if(!leftTouch && hypot(p.x-c.x,p.y-c.y)<80*scale){leftTouch=t;leftPoint=p;[owners setObject:@(-1) forKey:t];}
 +        else if(!cameraTouch && p.x>width*0.45){cameraTouch=t;cameraStart=cameraPoint=p;[owners setObject:@(-2) forKey:t];}
 +    }
 +    [self publish]; [self setNeedsDisplay];
 +}
-+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftPoint=[t locationInView:self]; if(t==artTouch)artPoint=[t locationInView:self]; if(t==cameraTouch){ cameraPoint=[t locationInView:self]; CGFloat dx=cameraPoint.x-cameraStart.x,dy=cameraPoint.y-cameraStart.y,d=hypot(dx,dy),r=55*scale; if(d>r) cameraStart=CGPointMake(cameraPoint.x-dx*r/d,cameraPoint.y-dy*r/d); }} [self publish]; [self setNeedsDisplay]; }
-+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftTouch=nil; if(t==cameraTouch)cameraTouch=nil; if(t==artTouch)artTouch=nil; [owners removeObjectForKey:t];} [self publish]; [self setNeedsDisplay]; }
++- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftPoint=[t locationInView:self]; if(t==cameraTouch){ cameraPoint=[t locationInView:self]; CGFloat dx=cameraPoint.x-cameraStart.x,dy=cameraPoint.y-cameraStart.y,d=hypot(dx,dy),r=55*scale; if(d>r) cameraStart=CGPointMake(cameraPoint.x-dx*r/d,cameraPoint.y-dy*r/d); }} [self publish]; [self setNeedsDisplay]; }
++- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftTouch=nil; if(t==cameraTouch)cameraTouch=nil; [owners removeObjectForKey:t];} [self publish]; [self setNeedsDisplay]; }
 +- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self touchesEnded:touches withEvent:event]; }
 +- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)event {
 +    if (overlay_menu_open() && count>0) { Key k=keys[count-1]; if(hypot(p.x-k.x,p.y-k.y)>MAX(k.r*1.2,22)) return nil; }
@@ -29136,7 +29132,17 @@ index 0000000..4d42e06
 +void hunter_touch_attach(SDL_Window *window) {
 +    dispatch_async(dispatch_get_main_queue(), ^{
 +        UIWindow *w=(__bridge UIWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
-+        if(w) { HunterPad *v=[[HunterPad alloc] initWithFrame:w.bounds]; [w addSubview:v]; }
++        if(w) {
++            // SDL's UIKit controller observes every keyboard, including our native
++            // alert, and moves its rendering view on keyboard notifications. The
++            // app uses the native alert instead of SDL's keyboard; leave that view
++            // alone when the alert opens or closes.
++            UIViewController *vc=w.rootViewController;
++            NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
++            [nc removeObserver:vc name:UIKeyboardWillShowNotification object:nil];
++            [nc removeObserver:vc name:UIKeyboardWillHideNotification object:nil];
++            HunterPad *v=[[HunterPad alloc] initWithFrame:w.bounds]; [w addSubview:v];
++        }
 +    });
 +}
 +void hunter_touch_read(uint64_t *b,int *lx,int *ly,int *rx,int *ry) {
