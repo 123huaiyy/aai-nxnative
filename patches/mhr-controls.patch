@@ -114,7 +114,7 @@ index 784727b..05915fe 100644
  void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
  bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
 diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
-index 1f2040e..38b33bd 100644
+index 1f2040e..79b7ff2 100644
 --- a/dm/ios/Sources/DmGamepad.m
 +++ b/dm/ios/Sources/DmGamepad.m
 @@ -1,15 +1,17 @@
@@ -202,7 +202,7 @@ index 1f2040e..38b33bd 100644
      NSMapTable<UITouch *, NSNumber *> *_owner;     // touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
      UITouch *_stick[2]; CGPoint _stickNow[2];      // the touch holding each stick and where it is now (0 left, 1 right)
 +    UITouch *_wheelTouch; CGPoint _wheelPoint;
-+    CAShapeLayer *_wheelKey, *_comboKey[2]; CATextLayer *_wheelLabel, *_comboLabel[2]; CALayer *_wheelArt, *_comboArt[2];
++    CAShapeLayer *_wheelKey, *_comboKey[3]; CATextLayer *_wheelLabel, *_comboLabel[3]; CALayer *_wheelArt, *_comboArt[3];
      CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
      uint64_t _faceBits, _dpadBits, _btnBits;
      NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
@@ -267,7 +267,7 @@ index 1f2040e..38b33bd 100644
  
  - (instancetype)initWithFrame:(CGRect)f {
      if ((self = [super initWithFrame:f])) {
-@@ -198,16 +262,24 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+@@ -198,16 +262,26 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
              // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
              k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
              k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
@@ -279,7 +279,9 @@ index 1f2040e..38b33bd 100644
 +        _wheelKey=shape(_controls); _wheelLabel=label(_wheelKey,@"轮盘 L+右摇杆");
 +        _comboKey[0]=shape(_controls); _comboLabel[0]=label(_comboKey[0],@"翔虫 ZL+X");
 +        _comboKey[1]=shape(_controls); _comboLabel[1]=label(_comboKey[1],@"翔虫 ZL+A");
++        _comboKey[2]=shape(_controls); _comboLabel[2]=label(_comboKey[2],@"组合 X+A");
 +        _wheelArt=artLayer(_controls,DM_ART_TOOL); _comboArt[0]=artLayer(_controls,DM_ART_SPELL); _comboArt[1]=artLayer(_controls,DM_ART_WEAPON);
++        _comboArt[2]=artLayer(_controls,DM_ART_LEFT_WEAPON);
          _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
          _knob = shape(_controls);
          CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
@@ -294,7 +296,7 @@ index 1f2040e..38b33bd 100644
          }
          _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
          _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
-@@ -218,9 +290,11 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+@@ -218,9 +292,11 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
          [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
          [self addSubview:_menu];
          NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
@@ -309,12 +311,12 @@ index 1f2040e..38b33bd 100644
          [self applyLayout];
          NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
          [nc addObserver:self selector:@selector(padsChanged:) name:GCControllerDidConnectNotification object:nil];
-@@ -234,15 +308,25 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+@@ -234,15 +310,25 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
  }
  - (void)applyLayout {   // show / hide the controls for the current layout
      [CATransaction begin]; [CATransaction setDisableActions:YES];
 -    for (int b = 0; b < B_N; b++) _key[b].hidden = _tap || (fullOnly(b) && !_full);
-+    _wheelKey.hidden=_wheelArt.hidden=!_style; for(int i=0;i<2;i++) _comboKey[i].hidden=_comboArt[i].hidden=!_style;
++    _wheelKey.hidden=_wheelArt.hidden=!_style; for(int i=0;i<3;i++) _comboKey[i].hidden=_comboArt[i].hidden=!_style;
 +    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (_style ? !styleKey(b) : (fullOnly(b) && !_full));
 +        _label[b].string = _style ? k_styleNames[b] : k_standardNames[b];
 +        if (_style) { _key[b].path = NULL; _key[b].shadowPath = NULL; }   // clear old geometry until layoutSubviews draws the iron plates
@@ -339,7 +341,7 @@ index 1f2040e..38b33bd 100644
      [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
      [self applyLayout]; [self setNeedsLayout];
  }
-@@ -279,9 +363,19 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+@@ -279,9 +365,19 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
  - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
  - (CGFloat)faceR { return K_FACE_R * self.u; }
  - (CGFloat)faceHitR { return MAX(self.faceR * 1.25, _layout.separated ? 22 : 0); }
@@ -360,7 +362,7 @@ index 1f2040e..38b33bd 100644
      if (self.portraitControls) {
          CGPoint p = [self portraitThumbCenter:NO];
          if (_full) p.x -= self.dpadR + 6 * self.u;
-@@ -291,8 +385,8 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+@@ -291,8 +387,8 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
      return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u);
  }
  - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
@@ -371,7 +373,7 @@ index 1f2040e..38b33bd 100644
  - (CGPoint)dpadCenter {
      if (self.portraitControls) {
          CGPoint p = [self portraitThumbCenter:NO];
-@@ -300,25 +394,55 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+@@ -300,25 +396,55 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
          return p;
      }
      CGRect s = self.corner; CGFloat u = self.u;
@@ -415,7 +417,7 @@ index 1f2040e..38b33bd 100644
 -- (CGPoint)menuCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(K_PILL_Y * self.u, _layout.separated ? 14 : 0)); }
 +- (CGPoint)menuCenter { CGRect s = self.safe; CGFloat y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * self.u; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0)); }
 +- (CGPoint)wheelCenter { CGRect s=self.corner; return CGPointMake(CGRectGetMaxX(s)-330*self.u,CGRectGetMaxY(s)-95*self.u); }
-+- (CGPoint)comboCenter:(int)i { CGRect s=self.corner; return CGPointMake(CGRectGetMaxX(s)-(i?155:230)*self.u,CGRectGetMaxY(s)-250*self.u); }
++- (CGPoint)comboCenter:(int)i { CGRect s=self.corner; CGFloat x=i==0?230:i==1?155:305; return CGPointMake(CGRectGetMaxX(s)-x*self.u,CGRectGetMaxY(s)-250*self.u); }
  
  static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
  - (CGFloat)buttonDistance:(int)b point:(CGPoint)p {
@@ -433,7 +435,7 @@ index 1f2040e..38b33bd 100644
      if (isDrop(b)) return dist(p, [self dropCenter:b]) / MAX([self dropR:b] * 1.35, _layout.separated ? 22 : 0);
      if (isClick(b)) return dist(p, [self clickCenter:b]) / MAX(K_CLICK_R * u * 1.35, _layout.separated ? 22 : 0);
      CGRect r = CGRectInset([self pillRect:b], -8 * u, -8 * u);
-@@ -328,8 +452,16 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -328,8 +454,16 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
  }
  - (int)btnAt:(CGPoint)p {   // Locked at touch-down; nearest normalized target wins overlapping separated-layout hits.
      int best = -1; CGFloat distance = 1;
@@ -451,7 +453,7 @@ index 1f2040e..38b33bd 100644
          CGFloat d = [self buttonDistance:b point:p];
          if (d <= 1 && (best < 0 || d < distance)) {
              best = b; distance = d;
-@@ -341,7 +473,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -341,7 +475,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
  - (CGFloat)menuDistance:(CGPoint)p { return dist(p, self.menuCenter) / MAX(K_MENU_R * self.u * 1.6, 22); }
  - (BOOL)menuTakes:(CGPoint)p {   // the menu button takes a touch in its hit circle unless a locked key's target is nearer (the drawn keys are hidden in Tap and with a controller)
      CGFloat d = [self menuDistance:p]; if (d > 1) return NO;
@@ -460,7 +462,7 @@ index 1f2040e..38b33bd 100644
      int hit = [self btnAt:p];
      return hit < 0 || d < [self buttonDistance:hit point:p];
  }
-@@ -350,10 +482,15 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -350,10 +484,15 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
      for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
      return m;
  }
@@ -477,17 +479,17 @@ index 1f2040e..38b33bd 100644
      if (a > -67.5 && a < 67.5) m |= 1ull << B_RIGHT;
      if (a > 22.5 && a < 157.5) m |= 1ull << B_UP;
      if (a > 112.5 || a < -112.5) m |= 1ull << B_LEFT;
-@@ -373,7 +510,9 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -373,7 +512,9 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
      uint64_t btn = 0, dpad = 0;
      for (UITouch *t in _owner) { uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff);
          if (c == C_BTN) btn |= 1ull << (v >> 8);
-+        else if(c == C_COMBO) btn |= (1ull<<B_ZL) | (1ull<<((v>>8) ? B_A : B_X));
++        else if(c == C_COMBO) { int i=(int)(v>>8); btn |= i==2 ? ((1ull<<B_X)|(1ull<<B_A)) : ((1ull<<B_ZL)|(1ull<<(i ? B_A : B_X))); }
          else if (c == C_DPAD) dpad |= [self dpadAt:[t locationInView:self]]; }
 +    if (_wheelTouch) btn |= 1ull<<B_L;
      int32_t ax[4] = {0};
      for (int i = 0; i < 2; i++) {
          CGPoint o = [self knobOffset:i]; CGFloat R = [self stickR:i], d = hypot(o.x, o.y), dz = R * K_DEAD;
-@@ -381,6 +520,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -381,6 +522,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
          CGFloat m = fmin((d - dz) / (R * K_FULL - dz), 1) / d;   // outside the dead zone: 0 rising to full at the full-tilt radius
          ax[i * 2] = (int32_t)lrint(o.x * m * 32767); ax[i * 2 + 1] = (int32_t)lrint(-o.y * m * 32767);   // host: up is positive; rounded so full tilt is exactly 32767
      }
@@ -495,7 +497,7 @@ index 1f2040e..38b33bd 100644
      BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits;
      uint64_t pressed = (face | dpad | btn) & ~(_faceBits | _dpadBits | _btnBits);
      unsigned gripping = (_stick[0] ? 1u : 0) | (_stick[1] ? 2u : 0);
-@@ -388,6 +528,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+@@ -388,6 +530,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
          [_touchFeedback impactOccurredWithIntensity:0.6]; [_touchFeedback prepare];
      }
      _hapticSticks = gripping;
@@ -503,11 +505,11 @@ index 1f2040e..38b33bd 100644
      _faceBits = face; _dpadBits = dpad; _btnBits = btn;
      pthread_mutex_lock(&g_mu);
      g_touch_btn = face | dpad | btn; g_touch_lx = ax[0]; g_touch_ly = ax[1]; g_touch_rx = ax[2]; g_touch_ry = ax[3];
-@@ -419,9 +560,12 @@ int front_web_touch(void);
+@@ -419,9 +562,12 @@ int front_web_touch(void);
  - (BOOL)controlAt:(CGPoint)p {
      if (_padOff || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return NO;
      if (_tap) return NO;
-+    if (_style && (dist(p,self.wheelCenter)<40*self.u || dist(p,[self comboCenter:0])<35*self.u || dist(p,[self comboCenter:1])<35*self.u)) return YES;
++    if (_style && (dist(p,self.wheelCenter)<40*self.u || dist(p,[self comboCenter:0])<35*self.u || dist(p,[self comboCenter:1])<35*self.u || dist(p,[self comboCenter:2])<35*self.u)) return YES;
      if ([self btnAt:p] >= 0) return YES;
 +    if (_style) return dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) <= 1
 +        || dist(p, self.dpadCenter) / MAX(self.dpadGrab, _layout.separated ? 22 : 0) <= 1 || (!_stick[1] && [self inRightArea:p]);
@@ -517,7 +519,7 @@ index 1f2040e..38b33bd 100644
      if (!_stick[0] && dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) < 1) return YES;
      return _full && !_stick[1] && [self inRightArea:p];
  }
-@@ -432,18 +576,20 @@ int front_web_touch(void);
+@@ -432,18 +578,20 @@ int front_web_touch(void);
  - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
      BOOL game = NO;
      for (UITouch *t in ts) {
@@ -526,7 +528,7 @@ index 1f2040e..38b33bd 100644
          CGPoint p = [t locationInView:self];
          if (_layout.separated && !CGRectContainsPoint(_layout.controls, p)) { game |= [self gameBegin:t]; continue; }
 +        if (_style && !_wheelTouch && dist(p,self.wheelCenter)<40*self.u) { _wheelTouch=t; _wheelPoint=p; [_owner setObject:@(C_WHEEL) forKey:t]; continue; }
-+        if (_style) { int combo=-1; for(int i=0;i<2;i++) if(dist(p,[self comboCenter:i])<30*self.u){combo=i;break;} if(combo>=0){[_owner setObject:@(C_COMBO | ((uint64_t)combo<<8)) forKey:t];continue;} }
++        if (_style) { int combo=-1; for(int i=0;i<3;i++) if(dist(p,[self comboCenter:i])<30*self.u){combo=i;break;} if(combo>=0){[_owner setObject:@(C_COMBO | ((uint64_t)combo<<8)) forKey:t];continue;} }
          int hit = _tap ? -1 : [self btnAt:p];   // the menu button took its own touches (menuTakes)
          if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
          if (_tap) { game |= [self gameBegin:t]; continue; }
@@ -542,7 +544,7 @@ index 1f2040e..38b33bd 100644
          if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
          else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
          else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
-@@ -457,6 +603,7 @@ int front_web_touch(void);
+@@ -457,6 +605,7 @@ int front_web_touch(void);
      for (UITouch *t in ts) {
          uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
          if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
@@ -550,7 +552,7 @@ index 1f2040e..38b33bd 100644
          else if (c == C_STICK) { _stickNow[v >> 8] = p;
              if ((v >> 8) == 1) { CGFloat d = dist(p, _rCentre), R = [self stickR:1];   // the right stick's centre follows a finger past its radius, so turning back responds at once
                  if (d > R) _rCentre = CGPointMake(p.x - (p.x - _rCentre.x) * R / d, p.y - (p.y - _rCentre.y) * R / d); } }
-@@ -470,6 +617,7 @@ int front_web_touch(void);
+@@ -470,6 +619,7 @@ int front_web_touch(void);
      for (UITouch *t in ts) {
          uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
          if ((v & 0xff) == C_GAME && (v >> 8) < 16) { _game[v >> 8] = nil; game = YES; }
@@ -558,7 +560,7 @@ index 1f2040e..38b33bd 100644
          [_owner removeObjectForKey:t]; [_faceOf removeObjectForKey:t]; for (int i = 0; i < 2; i++) if (t == _stick[i]) _stick[i] = nil;
      }
      if (game) [self pushGame];
-@@ -477,10 +625,11 @@ int front_web_touch(void);
+@@ -477,10 +627,11 @@ int front_web_touch(void);
  }
  - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
  - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
@@ -571,7 +573,7 @@ index 1f2040e..38b33bd 100644
  static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round) {   // teardrop: circle + two tangents meeting at the tip, tip slightly rounded
      CGFloat d = r * K_DROP_TIP, th = acos(r / d);
      CGPoint tip = CGPointMake(c.x + d * cos(tipAngle), c.y + d * sin(tipAngle));
-@@ -504,10 +653,13 @@ static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p
+@@ -504,10 +655,13 @@ static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p
  static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
      t.font = f; t.fontSize = fs;
@@ -586,7 +588,7 @@ index 1f2040e..38b33bd 100644
  
  - (void)layoutSubviews {
      [super layoutSubviews];
-@@ -519,26 +671,78 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+@@ -519,26 +673,78 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
          _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
      }
      _controls.frame = self.layer.bounds;
@@ -641,7 +643,7 @@ index 1f2040e..38b33bd 100644
 +    CGPoint dc = self.dpadCenter; CGFloat dr = self.dpadR;
 +    if (_style) {
 +        CGPoint wc=self.wheelCenter; setPath(_wheelKey,circlePath(wc,30*u)); placeArt(_wheelArt,wc,28*u); placeLabelAt(_wheelLabel,wc,9.5*u,38*u);
-+        for(int i=0;i<2;i++){ CGPoint cc=[self comboCenter:i]; setPath(_comboKey[i],circlePath(cc,24*u)); placeArt(_comboArt[i],cc,25*u); placeLabelAt(_comboLabel[i],cc,9.5*u,32*u); }
++        for(int i=0;i<3;i++){ CGPoint cc=[self comboCenter:i]; setPath(_comboKey[i],circlePath(cc,24*u)); placeArt(_comboArt[i],cc,25*u); placeLabelAt(_comboLabel[i],cc,9.5*u,32*u); }
 +    }
 +    for (int i = 0; i < 4; i++) {
 +        int b = arms[i].b;
@@ -672,7 +674,7 @@ index 1f2040e..38b33bd 100644
      setPath(_knob, circlePath(CGPointMake(k, k), k));
      CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
      in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
-@@ -546,13 +750,23 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+@@ -546,13 +752,23 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      [self refresh];
  }
  - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
@@ -685,7 +687,7 @@ index 1f2040e..38b33bd 100644
 -    for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
 -        _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
 +    _wheelKey.fillColor=(_wheelTouch ? on : idle).CGColor; _wheelKey.strokeColor=line.CGColor; _wheelLabel.foregroundColor=text.CGColor;
-+    for(int i=0;i<2;i++){ _comboKey[i].fillColor=idle.CGColor; _comboKey[i].strokeColor=line.CGColor; _comboLabel[i].foregroundColor=text.CGColor; }
++    for(int i=0;i<3;i++){ _comboKey[i].fillColor=idle.CGColor; _comboKey[i].strokeColor=line.CGColor; _comboLabel[i].foregroundColor=text.CGColor; }
 +    for (int b = 0; b < B_N; b++) { BOOL lit = (all >> b) & 1;
 +        _key[b].fillColor = (lit ? on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (lit ? textOn : text).CGColor;
 +        if (_art[b]) {   // a picture cannot take a fill: a press brightens it and pulls it in
@@ -700,7 +702,7 @@ index 1f2040e..38b33bd 100644
      [CATransaction commit];
  }
  
-@@ -647,7 +861,7 @@ static BOOL pads_slotted(GCController *gone) {
+@@ -647,7 +863,7 @@ static BOOL pads_slotted(GCController *gone) {
      GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
      if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
      BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
@@ -709,7 +711,7 @@ index 1f2040e..38b33bd 100644
  }
  @end
  
-@@ -747,7 +961,10 @@ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arra
+@@ -747,7 +963,10 @@ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arra
  void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
  void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
  int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
