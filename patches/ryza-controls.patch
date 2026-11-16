@@ -1,3 +1,147 @@
+diff --git a/dm/games/01003B7023A12000/game.tsv b/dm/games/01003B7023A12000/game.tsv
+new file mode 100644
+index 0000000..416a057
+--- /dev/null
++++ b/dm/games/01003B7023A12000/game.tsv
+@@ -0,0 +1,42 @@
++# Derived from game profile 0100199023B2E000 by scripts/build_ipa_from_nsp.py for v65536 (1.2.0), a version that profile was not brought up on:
++# its keys as they are, this version's build row, and shader tables made from this version's own files
++# Game profile of Atelier Ryza: Ever Darkness & the Secret Hideout DX (Switch, update v65536 = 1.2.0; the title screen says "Ver. 1.02"). Plays on the Mac
++# Format: see dm/games/README.md
++# Gust's engine on Koei Tecmo's KTGL (KtglFsThread_Host), on NVN, SDK 18.3.2. Modules main + subsdk0 (NintendoSDK_movie) + sdk.
++# RomFS: loose files, 10.35 GB: Data/NX (G1T textures, G1S shader files, 3,956 'CRAE' *.elixir.gz archives stored uncompressed and 156 in Gust's chunked zlib), event scripts, XML tables
++
++# ---- Identity ----
++title_id	01003B7023A12000
++program_id	01003B7023A12000
++
++# ---- App ----
++# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
++name	Atelier Ryza: Ever Darkness & the Secret Hideout DX
++ipa	AtelierRyzaEverDarknessTheSecretHideoutDx.ipa
++app_category	public.app-category.role-playing-games
++# A 3D game: right stick for the camera, the D-pad for the event log and the map. main reads no touch screen (no GetTouchScreenState import)
++pad_layout	style
++
++# ---- Versions ----
++build	v65536	1.2.0	main=4102b882146c189b4178f49e0b3cc6cc	subsdk0=14765b1d77b12d8654ea87a61c65e2b1	sdk=f118ae1c2e7728471aaf1a0d58484968
++package	v65536
++shader_versions	v65536
++
++# ---- Files ----
++# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie)
++modules	main subsdk0 sdk
++romfs_marker	Data/NX/Sound/pack01.ktsl2stbin
++zip_store	.gz:.ktsl2asbin:.ktsl2stbin:.mp4:.trmd:.metallib
++
++# ---- Memory ----
++# The NPDM declares no system resource (META +0x14 = 0): no virtual address memory; nninitStartup sets a heap of 3.14 GB. The 4 GB block of the other games without virtual
++# address memory (256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region)
++mem_reserve	0x100000000
++mem_alias	0x10000000
++mem_stack	0x10000000
++app_pool	0xCD500000
++sys_resource	0x0
++
++# ---- Shader split (shader_split.py; GLSLC outputs in the G2S containers of Data/NX/Shader/*.g1s, ShaderOriginal/*.fpo / *.cpo, the elixir archives, PostEffect/pe_pack.elixir.gz in Gust's chunked zlib, and main) ----
++shader_groups	/Data/=data /Event/=event /Saves/=saves /Script/=script /DLC/=dlc
++shader_note	Atelier Ryza: Ever Darkness & the Secret Hideout DX shaders
+diff --git a/dm/games/01005E9023A14000/game.tsv b/dm/games/01005E9023A14000/game.tsv
+new file mode 100644
+index 0000000..ec6bcb3
+--- /dev/null
++++ b/dm/games/01005E9023A14000/game.tsv
+@@ -0,0 +1,42 @@
++# Derived from game profile 0100199023B2E000 by scripts/build_ipa_from_nsp.py for v65536 (1.1.0), a version that profile was not brought up on:
++# its keys as they are, this version's build row, and shader tables made from this version's own files
++# Game profile of Atelier Ryza: Ever Darkness & the Secret Hideout DX (Switch, update v65536 = 1.2.0; the title screen says "Ver. 1.02"). Plays on the Mac
++# Format: see dm/games/README.md
++# Gust's engine on Koei Tecmo's KTGL (KtglFsThread_Host), on NVN, SDK 18.3.2. Modules main + subsdk0 (NintendoSDK_movie) + sdk.
++# RomFS: loose files, 10.35 GB: Data/NX (G1T textures, G1S shader files, 3,956 'CRAE' *.elixir.gz archives stored uncompressed and 156 in Gust's chunked zlib), event scripts, XML tables
++
++# ---- Identity ----
++title_id	01005E9023A14000
++program_id	01005E9023A14000
++
++# ---- App ----
++# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
++name	Atelier Ryza 2 DX
++ipa	AtelierRyzaEverDarknessTheSecretHideoutDx.ipa
++app_category	public.app-category.role-playing-games
++# A 3D game: right stick for the camera, the D-pad for the event log and the map. main reads no touch screen (no GetTouchScreenState import)
++pad_layout	style
++
++# ---- Versions ----
++build	v65536	1.1.0	main=f068840af53733324308ce7e0c4c29ce	subsdk0=14765b1d77b12d8654ea87a61c65e2b1	sdk=f118ae1c2e7728471aaf1a0d58484968
++package	v65536
++shader_versions	v65536
++
++# ---- Files ----
++# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie)
++modules	main subsdk0 sdk
++romfs_marker	Data/NX/Sound/pack01.ktsl2stbin
++zip_store	.gz:.ktsl2asbin:.ktsl2stbin:.mp4:.trmd:.metallib
++
++# ---- Memory ----
++# The NPDM declares no system resource (META +0x14 = 0): no virtual address memory; nninitStartup sets a heap of 3.14 GB. The 4 GB block of the other games without virtual
++# address memory (256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region)
++mem_reserve	0x100000000
++mem_alias	0x10000000
++mem_stack	0x10000000
++app_pool	0xCD500000
++sys_resource	0x0
++
++# ---- Shader split (shader_split.py; GLSLC outputs in the G2S containers of Data/NX/Shader/*.g1s, ShaderOriginal/*.fpo / *.cpo, the elixir archives, PostEffect/pe_pack.elixir.gz in Gust's chunked zlib, and main) ----
++shader_groups	/Data/=data /Event/=event /Saves/=saves /Script/=script /DLC/=dlc
++shader_note	Atelier Ryza: Ever Darkness & the Secret Hideout DX shaders
+diff --git a/dm/games/0100729023A18000/game.tsv b/dm/games/0100729023A18000/game.tsv
+new file mode 100644
+index 0000000..d95d0a3
+--- /dev/null
++++ b/dm/games/0100729023A18000/game.tsv
+@@ -0,0 +1,42 @@
++# Derived from game profile 0100199023B2E000 by scripts/build_ipa_from_nsp.py for v0 (1.0.0), a version that profile was not brought up on:
++# its keys as they are, this version's build row, and shader tables made from this version's own files
++# Game profile of Atelier Ryza: Ever Darkness & the Secret Hideout DX (Switch, update v65536 = 1.2.0; the title screen says "Ver. 1.02"). Plays on the Mac
++# Format: see dm/games/README.md
++# Gust's engine on Koei Tecmo's KTGL (KtglFsThread_Host), on NVN, SDK 18.3.2. Modules main + subsdk0 (NintendoSDK_movie) + sdk.
++# RomFS: loose files, 10.35 GB: Data/NX (G1T textures, G1S shader files, 3,956 'CRAE' *.elixir.gz archives stored uncompressed and 156 in Gust's chunked zlib), event scripts, XML tables
++
++# ---- Identity ----
++title_id	0100729023A18000
++program_id	0100729023A18000
++
++# ---- App ----
++# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
++name	Atelier Ryza 3 DX
++ipa	AtelierRyzaEverDarknessTheSecretHideoutDx.ipa
++app_category	public.app-category.role-playing-games
++# A 3D game: right stick for the camera, the D-pad for the event log and the map. main reads no touch screen (no GetTouchScreenState import)
++pad_layout	style
++
++# ---- Versions ----
++build	v0	1.0.0	main=8ed41d06b498b3e02e8449d83d1387c0	subsdk0=14765b1d77b12d8654ea87a61c65e2b1	sdk=f118ae1c2e7728471aaf1a0d58484968
++package	v0
++shader_versions	v0
++
++# ---- Files ----
++# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie)
++modules	main subsdk0 sdk
++romfs_marker	Data/NX/Sound/pack01.ktsl2stbin
++zip_store	.gz:.ktsl2asbin:.ktsl2stbin:.mp4:.trmd:.metallib
++
++# ---- Memory ----
++# The NPDM declares no system resource (META +0x14 = 0): no virtual address memory; nninitStartup sets a heap of 3.14 GB. The 4 GB block of the other games without virtual
++# address memory (256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region)
++mem_reserve	0x100000000
++mem_alias	0x10000000
++mem_stack	0x10000000
++app_pool	0xCD500000
++sys_resource	0x0
++
++# ---- Shader split (shader_split.py; GLSLC outputs in the G2S containers of Data/NX/Shader/*.g1s, ShaderOriginal/*.fpo / *.cpo, the elixir archives, PostEffect/pe_pack.elixir.gz in Gust's chunked zlib, and main) ----
++shader_groups	/Data/=data /Event/=event /Saves/=saves /Script/=script /DLC/=dlc
++shader_note	Atelier Ryza: Ever Darkness & the Secret Hideout DX shaders
 diff --git a/dm/games/game.py b/dm/games/game.py
 index 53e23ee..3d398ea 100644
 --- a/dm/games/game.py
