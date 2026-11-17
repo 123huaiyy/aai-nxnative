@@ -1,0 +1,41 @@
+{
+ "game": "010005501E68C000",
+ "modules": [
+  {
+   "name": "main",
+   "size": 96152508,
+   "header": {
+    "PATCH_OFF": "0x5ad0000",
+    "KEY_PAGE_OFF": "0x5ac4000",
+    "KEY_PAGE_SIZE": "0x4000",
+    "TEXT_END": "0x4052f18"
+   }
+  },
+  {
+   "name": "subsdk0",
+   "size": 7397200,
+   "header": {
+    "PATCH_OFF": "0x6b0000",
+    "KEY_PAGE_OFF": "0x6ac000",
+    "KEY_PAGE_SIZE": "0x4000",
+    "TEXT_END": "0x365da0"
+   }
+  },
+  {
+   "name": "sdk",
+   "size": 13103112,
+   "header": {
+    "PATCH_OFF": "0xbf0000",
+    "KEY_PAGE_OFF": "0xbe8000",
+    "KEY_PAGE_SIZE": "0x4000",
+    "TEXT_END": "0x5e7780"
+   }
+  }
+ ],
+ "game_tsv": "# Derived from game profile 010005501E68C000 by scripts/build_ipa_from_nsp.py for v65536 (1.0.0.1), a version that profile was not brought up on:\n# its keys as they are, this version's build row, and shader tables made from this version's own files\n# Game profile of Ace Attorney Investigations Collection (Switch, base game v0 + update 1.0.0.2 = v131072). Plays on the Mac and on the iPhone\n# Format: see dm/games/README.md\n# Unity 2022.3.17f1 (IL2CPP), SDK 17.5.3: the shaders are Shader objects in the Addressables bundles and the player's serialized files (read by shader_split.py through unityfs.py).\n# Unity 2022's Switch subprograms, the IL2CPP file API and the first boots were worked out by armyja (GitHub issues #17, #18, #19 and pull requests #15, #16)\n\n# ---- Identity ----\ntitle_id\t010005501E68C000\nprogram_id\t010005501E68C000\n\n# ---- App ----\n# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)\nname\tAce Attorney Investigations Collection\nipa\tAceAttorneyInvestigations.ipa\napp_category\tpublic.app-category.adventure-games\n\n# ---- Versions ----\n# only the merged 1.0.0.2 copy is extracted\nbuild\tv65536\t1.0.0.1\tmain=ee4edee8ddad84d4d30fdc7d316e741b\tsubsdk0=2f9e7f4ec017bb00e214af7c2fd70f4b\tsdk=311deab1f062b504f3d646a49ddcd4e8\npackage\tv65536\nshader_versions\tv65536\n\n# ---- Files ----\n# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie)\nmodules\tmain subsdk0 sdk\nromfs_marker\tData/globalgamemanagers\nzip_store\t.assets:.bundle:.dat:.json:.resource:.ress:.metallib\n\n# ---- Memory ----\n# The NPDM declares 16 MB of system resource, so IsVirtualAddressMemoryEnabled is true: nninitStartup (main+0x874b00) hands application pool − used memory to StandardAllocator as virtual address memory,\n# one 1 GB-aligned address region in the alias region, and never calls SetMemoryHeapSize. SDK 17's AddressRegionManager takes about 1 GB of the alias region as its node area first;\n# dm/tools/sdk_patches.py registers a cut for this sdk build that shrinks it to 62 MB, as for Fire Emblem Engage. Unity's own allocator (main+0x40f1d4 → AllocateAddressRegion) reserves its pools beside it,\n# each aligned by its size. Measured over the first five minutes (title, Episode 1's opening, the first investigation; probes on VammManager::AllocateAddressRegion's success path sdk+0x1395a8\n# and FreeAddressRegion sdk+0x139df0, commits from the MapPhysicalMemory log): with Engage's 2.5 GB pool StandardAllocator reserved 2.44 GB and committed only 0.19 GB, Unity's pools held 1.06 GB,\n# and after 140 s the live regions ended 4.37 GB into the 4.375 GB alias region. Over ten minutes of the same route, a 1.5 GB pool (StandardAllocator 1.44 GB at +0.75 GB) let them reach +3.91 GB,\n# a 1 GB pool +2.85 GB. So the pool is reported as 1 GB: StandardAllocator gets 0.94 GB (five times its use) right after the node area, and running out of address space is a crash, while\n# a pool a little smaller than what the game maps in all (1.02 GB at the peak) changes nothing: the host does not enforce it and only nninitStartup reads it\n# The block is Engage's 5 GB: 256 MB in front + 4.375 GB alias region + 256 MB stack region + 128 MB heap region (the game never calls SetHeapSize)\nmem_reserve\t0x140000000\nmem_alias\t0x118000000\nmem_stack\t0x10000000\napp_pool\t0x40000000\n\n# ---- Shader split (shader_split.py; Unity Shader objects, read by unityfs.py) ----\n# engine built-ins (the unitybuiltinshaders bundle, Resources/) go to engine, the player's serialized files to data, the other Addressables bundles to assets\nshader_groups\t_unitybuiltinshaders_=engine /Resources/=engine /StreamingAssets/=assets /Data/=data\nshader_note\tAce Attorney Investigations Collection shaders\n",
+ "display_name": "Ace Attorney Investigations Collection",
+ "version": "1.0.0",
+ "language": "zh-Hans",
+ "bundle_id": "org.nxnative.010005501e68c000",
+ "app_category": "public.app-category.adventure-games"
+}
