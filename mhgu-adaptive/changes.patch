@@ -1,0 +1,215 @@
+diff --git a/Makefile b/Makefile
+index ab28f24..f548b25 100644
+--- a/Makefile
++++ b/Makefile
+@@ -120,6 +120,9 @@ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools/ga
+ GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-16)
+ 
+ RT_OBJ   = $(patsubst runtime/%.c,$(O)/rt/%.o,$(RT_SRC)) $(RT_CXX) $(O)/rt/overlay.o $(IMGUI_OBJ)
++ifeq ($(PLATFORM),darwin)
++RT_OBJ += $(O)/rt/touch_hunter.o
++endif
+ # Dear ImGui with cimgui's C API (third_party/cimgui: Forge plugins' ImGui, runtime/forge_imgui.c, overlay.cpp)
+ IMGUI    := third_party/cimgui
+ IMGUI_SRC := $(IMGUI)/cimgui.cpp $(addprefix $(IMGUI)/imgui/,imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp imgui_demo.cpp)
+@@ -164,6 +167,10 @@ $(O)/rt/forge_imgui.o: RTFLAGS += -DCIMGUI_NO_EXPORT -Wno-unused-variable
+ 
+ $(O)/rt/platform/darwin.o: RTFLAGS += -x objective-c
+ 
++$(O)/rt/touch_hunter.o: runtime/touch_hunter.m runtime/touch_hunter.h
++	@mkdir -p $(dir $@)
++	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
++
+ $(O)/rt/overlay.o: runtime/overlay.cpp runtime/overlay.h runtime/forge.h
+ 	@mkdir -p $(dir $@)
+ 	$(CXX) $(IMGUIFLAGS) $(if $(filter 1,$(NULL_GPU)),-DMHGU_NULL_BACKEND) -Wall -Iruntime -c $< -o $@
+diff --git a/ios/Info.plist b/ios/Info.plist
+index fe4e571..350bfec 100644
+--- a/ios/Info.plist
++++ b/ios/Info.plist
+@@ -22,6 +22,8 @@
+ 	<string>1</string>
+ 	<key>LSRequiresIPhoneOS</key>
+ 	<true/>
++	<key>UILaunchScreen</key>
++	<dict/>
+ 	<key>UIFileSharingEnabled</key>
+ 	<true/>
+ 	<key>LSSupportsOpeningDocumentsInPlace</key>
+diff --git a/runtime/config.c b/runtime/config.c
+index 45a17ef..7d3af4f 100644
+--- a/runtime/config.c
++++ b/runtime/config.c
+@@ -12,6 +12,9 @@
+ #include <strings.h>
+ 
+ #include <SDL3/SDL.h>
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
+ 
+ #include "config.h"
+ #include "rt.h"
+@@ -452,6 +455,15 @@ void config_load(void) {
+     // still fits down to 16:10 (a little flatter, nvn/vulkan/exec.c), so a narrower window (4:3) shows 16:10 with bars.
+     // Wider than 16:9 shows more to the sides, 16:9 to 16:10 more above and below (camera_fovy, gen.py PATCHES).
+     float aspect = g_config.aspect_ratio > 0 ? g_config.aspect_ratio : (float)tw / (float)th;
++#if defined(__APPLE__) && TARGET_OS_IPHONE
++    // The window is landscape and fullscreen. Use the actual display shape,
++    // not the 1920x1080 render-resolution floor, when the player selected Auto.
++    if (g_config.aspect_ratio <= 0 && dm && dm->w > 0 && dm->h > 0) {
++        float long_side = (float)(dm->w > dm->h ? dm->w : dm->h);
++        float short_side = (float)(dm->w > dm->h ? dm->h : dm->w);
++        aspect = long_side / short_side;
++    }
++#endif
+     if (aspect < 1.6f - 0.005f) {
+         if (g_config.aspect_ratio > 0)
+             LOG("[config] AspectRatio %.3f is narrower than 16:10, which the HUD needs: using 16:10\n", aspect);
+diff --git a/runtime/config.h b/runtime/config.h
+index 4b9176a..281f6ea 100644
+--- a/runtime/config.h
++++ b/runtime/config.h
+@@ -52,6 +52,9 @@ extern float g_ui_anchor_aspect;   // the HUD's width / height, 16:9 .. g_render
+ float camera_fovy(float fovy, float aspect);  // a 3D camera's vertical field of view for its aspect (gen.py PATCHES)
+ 
+ void config_load(void);  // before the window and the guest start
++#ifdef __cplusplus
++extern "C"
++#endif
+ void config_set_join(const char *join_addr);
+ int config_live_combo_window(void);
+ void config_window_focus(int focused);
+diff --git a/runtime/host_input.c b/runtime/host_input.c
+index d55ebb1..b0df906 100644
+--- a/runtime/host_input.c
++++ b/runtime/host_input.c
+@@ -26,6 +26,9 @@
+ #include "overlay.h"
+ #include "rt.h"
+ #include "textinput.h"
++#if defined(__APPLE__)
++#include "touch_hunter.h"
++#endif
+ 
+ #define B(x) (1ull << (x))
+ 
+@@ -381,6 +384,9 @@ static void open_pad(SDL_JoystickID id) {
+     SDL_Gamepad *p = SDL_OpenGamepad(id);
+     if (!p) { LOG("[input] gamepad %u failed to open: %s\n", (unsigned)id, SDL_GetError()); return; }
+     pads[npads].pad = p, pads[npads++].opened_ns = plat_now_ns();
++#if defined(__APPLE__)
++    hunter_touch_set_controller_connected(npads > 0);
++#endif
+     if (!pad) pad = p, log_pad(id, "gamepad in use");
+     else log_pad(id, "gamepad open too (a button pressed on it makes it the one in use)");
+ }
+@@ -402,6 +408,9 @@ static void close_pad(SDL_JoystickID id) {
+     LOG("[input] gamepad removed%s: %s\n", was ? " (it was in use)" : "", name ? name : "?");
+     SDL_CloseGamepad(pads[i].pad);
+     pads[i] = pads[--npads];
++#if defined(__APPLE__)
++    hunter_touch_set_controller_connected(npads > 0);
++#endif
+     if (was) {
+         pad = npads ? pads[0].pad : NULL;
+         if (pad) log_pad(SDL_GetGamepadID(pad), "gamepad in use");
+@@ -417,6 +426,10 @@ static void pick_pad(void) {  // over every controller SDL sees now: those MHGU_
+ 
+ void host_input_event(const SDL_Event *e) {
+     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) pad_pressed(e->gbutton.which);
++    // Connection changes must be handled even while an overlay or text entry
++    // consumes other input, or the touch overlay can stay in the wrong state.
++    if (e->type == SDL_EVENT_GAMEPAD_ADDED) open_pad(e->gdevice.which);
++    if (e->type == SDL_EVENT_GAMEPAD_REMOVED) close_pad(e->gdevice.which);
+     if (overlay_event(e)) return;  // (Forge's menu open: keyboard and mouse are its)
+     if (textinput_event(e)) return;  // (typing into a text entry: not controller buttons)
+     switch (e->type) {
+@@ -502,12 +515,6 @@ void host_input_event(const SDL_Event *e) {
+     case SDL_EVENT_WINDOW_FOCUS_GAINED:
+         config_window_focus(1);
+         break;
+-    case SDL_EVENT_GAMEPAD_ADDED:
+-        open_pad(e->gdevice.which);
+-        break;
+-    case SDL_EVENT_GAMEPAD_REMOVED:
+-        close_pad(e->gdevice.which);
+-        break;
+     }
+ }
+ 
+@@ -591,6 +598,12 @@ void host_input_update(void) {
+     lx += kx * k, ly += ky * k;
+     b |= mouse_buttons;
+     mouse_update(&rx, &ry);
++#if defined(__APPLE__)
++    uint64_t touch_buttons; int tx,ty,trx,try_;
++    if (hunter_touch_take_menu()) overlay_toggle_menu();
++    hunter_touch_read(&touch_buttons,&tx,&ty,&trx,&try_);
++    b |= touch_buttons; lx += tx; ly += ty; rx += trx; ry += try_;
++#endif
+ 
+     if (pad) {
+         static const struct { SDL_GamepadButton sdl; int btn; } pad_buttons[] = {
+diff --git a/runtime/services/misc.c b/runtime/services/misc.c
+index dab197a..d1d47f3 100644
+--- a/runtime/services/misc.c
++++ b/runtime/services/misc.c
+@@ -112,7 +112,7 @@ static const char *const languages[] = {"ja", "en-US", "fr", "de", "it", "es", "
+ 
+ const char *settings_language(void) {
+     const char *l = getenv("MHGU_LANG");
+-    return l && *l ? l : "en-US";
++    return l && *l ? l : "zh-Hans";
+ }
+ 
+ static uint64_t lang_code(const char *s) {
+diff --git a/runtime/textinput.c b/runtime/textinput.c
+index 6a8d09c..60d7d7c 100644
+--- a/runtime/textinput.c
++++ b/runtime/textinput.c
+@@ -143,16 +143,16 @@ bool textinput_event(const SDL_Event *e) {
+ 
+ void textinput_update(void) {
+ #if defined(__APPLE__)
+-    // On iOS, only pop up the virtual on-screen keyboard when the game actively requests text (e.g. character creation)
+-    // Opening the Forge overlay GUI must NOT pop up the iOS software keyboard!
+-    bool want = textinput_active();
++    // The iOS keyboard is presented by plat_ios_text_input. Starting SDL's
++    // separate keyboard here can resize the Metal view underneath that alert.
++    return;
+ #else
+     bool want = textinput_active() || overlay_menu_open();  // (Forge's menu takes typed text too)
+-#endif
+     if (want == g_window_on) return;
+     SDL_Window *w = ui_window();
+     if (!w) return;
+     if (want) SDL_StartTextInput(w);
+     else SDL_StopTextInput(w);
+     g_window_on = want;
++#endif
+ }
+diff --git a/runtime/ui.c b/runtime/ui.c
+index 54b058d..a90b4b6 100644
+--- a/runtime/ui.c
++++ b/runtime/ui.c
+@@ -9,6 +9,9 @@
+ #include "config.h"
+ #include "mods.h"
+ #include "rt.h"
++#if defined(__APPLE__)
++#include "touch_hunter.h"
++#endif
+ 
+ volatile uint64_t g_present_count;
+ static SDL_Window *window;
+@@ -98,6 +101,9 @@ void ui_init(void) {
+     if (getenv("MHGU_HIDDEN")) flags |= SDL_WINDOW_HIDDEN;
+     window = SDL_CreateWindow("Monster Hunter Generations Ultimate", win_w, win_h, flags);
+     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
++#if defined(__APPLE__)
++    hunter_touch_attach(window);
++#endif
+ #ifndef __APPLE__
+     if (g_config.display_mode != DISPLAY_WINDOWED) set_fullscreen(true);
+ #endif
