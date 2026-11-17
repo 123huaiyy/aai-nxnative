@@ -1,0 +1,53 @@
+name: Ace Attorney iOS 18 renderer investigation
+on:
+  push:
+    branches: [codex/aai-ios18-indirect-20261118]
+permissions:
+  contents: read
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+jobs:
+  compile:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seedds/nxnative
+          ref: f3ec8fc81e49744d178379a38ceae0fc1cba04d0
+          path: nxnative
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.14'
+      - name: Prepare toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          command -v xcodegen || brew install xcodegen
+          python3 -m pip install fonttools
+      - name: Apply classic Metal experiment
+        run: git -C nxnative apply "$GITHUB_WORKSPACE/ci/mhr-oldchips/changes.patch"
+      - name: Test classic Metal render-pass conversion
+        run: |
+          xcrun --sdk macosx clang -fobjc-arc -Wall -Wextra -framework Metal -framework Foundation nxnative/dm/gfx/nvn/nvn_legacy_pass.m nxnative/dm/gfx/tests/t_legacy_pass.m -o "$RUNNER_TEMP/legacy_pass_test"
+          "$RUNNER_TEMP/legacy_pass_test"
+      - name: Test iOS 18 classic Metal commands
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -target arm64-apple-ios18.0 -isysroot "$SDK" -fobjc-arc -Werror=unguarded-availability -c nxnative/dm/gfx/nvn/nvn_legacy_commands.m -o "$RUNNER_TEMP/legacy_ios18.o"
+          xcrun --sdk macosx clang -fobjc-arc -Wall -Wextra -framework Metal -framework Foundation nxnative/dm/gfx/nvn/nvn_legacy_commands.m nxnative/dm/gfx/tests/t_legacy_commands.m -o "$RUNNER_TEMP/legacy_commands_test"
+          xcrun --sdk iphoneos metal -mios-version-min=18.0 -c nxnative/dm/gfx/tests/legacy_texture_draw.metal -o "$RUNNER_TEMP/legacy_draw.air"
+          "$RUNNER_TEMP/legacy_commands_test" nxnative/dm/gfx/tests/legacy_texture_draw.metal
+      - name: Probe iOS 18 deployment target
+        run: |
+          python3 -c 'from pathlib import Path; p=Path("nxnative/dm/ios/project.yml"); s=p.read_text(); p.write_text(s.replace("iOS: " + chr(34) + "26.0" + chr(34), "iOS: " + chr(34) + "18.0" + chr(34)))'
+      - name: Enable experimental code for compilation only
+        run: |
+          python3 -c 'from pathlib import Path; p=Path("nxnative/dm/ios/project.yml"); s=p.read_text(); p.write_text(s.replace("OTHER_CFLAGS: $(inherited) -mcpu=apple-m1", "OTHER_CFLAGS: $(inherited) -DDM_EXPERIMENT_BC_SOFT=1 -mcpu=apple-m1"))'
+      - name: Compile iOS shell (not a playable app)
+        run: python3 ci/ci/build_shell.py --repo nxnative --layout ci/mhr-oldchips/layout.json --output "$RUNNER_TEMP/shell"
