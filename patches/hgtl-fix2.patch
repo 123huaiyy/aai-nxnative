@@ -1,0 +1,29 @@
+diff --git a/dm/host/hle_audio.c b/dm/host/hle_audio.c
+--- a/dm/host/hle_audio.c
++++ b/dm/host/hle_audio.c
+@@ -135,3 +135,3 @@
+     if (a->ch != 6) { pull(a, dst, bytes); return; }
+-    enum { BLOCK = 128, CF = 32768, CC = 23167, CL = 8224, CB = 23167 };
++    enum { BLOCK = 128, CF = 32768, CC = 23167, CL = 0, CB = 23167 };
+     int16_t scratch[BLOCK * 6], *out = (int16_t *)dst;
+diff --git a/dm/host/hle_audren.c b/dm/host/hle_audren.c
+--- a/dm/host/hle_audren.c
++++ b/dm/host/hle_audren.c
+@@ -399,3 +399,3 @@
+             // Channel order front-left front-right center LFE back-left back-right; 6 → 2 with the system default downmix coefficients (front 1.0, center 0.707, LFE 0.251, back 0.707, Q15)
+-            enum { CF = 32768, CC = 23167, CL = 8224, CB = 23167 };
++            enum { CF = 32768, CC = 23167, CL = 0, CB = 23167 };
+             static int32_t st[FRAME_MAX * 2];   // the stereo downmix before clamping (capture runs under g_render_mu)
+@@ -581,3 +581,3 @@
+ enum { DEVNAME = 0x100 };
+-static void out_devname(char *out) { memset(out, 0, DEVNAME); strlcpy(out, "AudioBuiltInSpeakerOutput", DEVNAME); }
++static void out_devname(char *out) { memset(out, 0, DEVNAME); strlcpy(out, "AudioTvOutput", DEVNAME); }
+ HLE_FORCE("_ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi", "output device list: 1 built-in speaker", int, h_ad_List, char *names, int n) { if (n <= 0 || !names) return 0; out_devname(names); return 1; }
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -163,3 +163,3 @@
+     }
+-    self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
++    const char *pf = getenv("DM_PICTURE_FIT"); self.fill = pf ? dm_picture_fill(pf) : YES;
+     if (self.fill) LOG("front end: picture Fill (DM_PICTURE_FIT=fill), the 16:9 picture covers the screen in landscape and its edges are cropped");
