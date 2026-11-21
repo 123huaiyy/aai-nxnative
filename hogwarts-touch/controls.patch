@@ -1,0 +1,287 @@
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -7,8 +7,8 @@
+ //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick that is not drawn
+ //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
+ //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
+-//   Game style: the same controls, laid out as the game's own screen furniture rather than as a pad. A wand ring in the bottom-left corner is the left stick; a large spell seal in the bottom-right is ZR, the action a game like Hogwarts Legacy casts with; a shield inward of it is ZL; A / B / X / Y sit on an arc over the seal, which is where the thumb already is; a potion wheel above the wand ring is the D-pad (four slots on a rim, the game's tool slots: a slide round the rim picks one, and a slot is never two at once); L / R are high on each side.
+-//     Every key is one picture of what it does and, under it in small type, what it is bound to then. The pictures are the artwork a local ComfyUI (Qwen-Image) drew, one gold sigil per verb: a seal of rings and a star (cast), a kite shield (Protego), an arrow sweeping aside (dodge), an arrow rising off the ground (jump), a sunburst (Ancient Magic), a raised hand (interact), a ring with a cross in it (the spell set wheel), a ring with an arrow round it (the next set), three lines (the pause menu), an open book (the field guide) and, empty and uncoloured like the rest, one flask for each of the four potions. DmPadArt.h carries them as base64, so they travel with this file through the same patch. Each was keyed to alpha and given a dark edge baked under its own stroke rather than a halo behind it: this game opens on a near-white scene, where a thin gold line needs an edge to read, and a halo there is a grey rectangle — the first bake's mistake, and the reason the pictures went back to ComfyUI. One CALayer a key: no disc behind it, no stroke, no engraving, no shadow. That is the whole of what the previous pad spent three layers a key on, and it is why this one does not look heavy. A press brightens the glyph and pulls it in 8%, the only thing on the pad that moves besides the stick's knob. Captions carry a short dark shadow for the same reason the glyphs carry an edge. The wand ring, the one control that needs no telling, carries no caption. No L3 / R3 (the 3D layout has those), and the right half of the screen is the right stick.
++//   Game style: standalone glyphs and small controller labels, with the movement stick and shortcuts on the left,
++//     casting and face buttons on the right, and unclaimed touches on the right controlling the camera.
+ //   Hidden: nothing but the menu button, dimmed to a quarter, for a player with a controller on who wants a clean screen. No control takes a touch then: every one goes to the game's touch screen.
+ //   Touch-down ownership: the menu button where it is nearer than a locked key (a view of its own, DmMenuButton), locked keys next (shoulders, − / +, L3 / R3), then whichever of the diamond, the D-pad and the left stick has the smallest distance / grab radius (the left stick's grab circle borders the D-pad),
+ //     then in 3D the right stick for a touch in the right third.
+@@ -139,22 +139,22 @@
+     K_STYLE_MOVE_R = 58, K_STYLE_KNOB_R = 22,
+     K_STYLE_CAST_X = 126, K_STYLE_CAST_Y = 112,     // spell seal (ZR, the main action): centre from the right and the bottom
+     K_STYLE_CAST_R = 58,                            // its target radius, then the size the glyph itself is drawn at
+-    K_STYLE_CAST_ART = 124,
++    K_STYLE_CAST_ART = 86,
+     K_STYLE_GUARD_DX = 152, K_STYLE_GUARD_DY = 2,   // shield (ZL): inward of the seal and level with it
+-    K_STYLE_GUARD_R = 42, K_STYLE_GUARD_ART = 76,
++    K_STYLE_GUARD_R = 42, K_STYLE_GUARD_ART = 54,
+     K_STYLE_ARC_R = 101, K_STYLE_ARC_STEP = 0.600,  // A / B / X / Y: this far from the seal's centre, the arc's keys this many radians apart
+     K_STYLE_FACE_R = 26, K_STYLE_FACE_ART = 44,     // the target radius, then the glyph's own size
+-    K_STYLE_DOSE_X = 118, K_STYLE_DOSE_Y = 250,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
+-    K_STYLE_DOSE_R = 48, K_STYLE_DOSE_ART = 44,     // the rim its slots sit on, a flask's size
+-    K_STYLE_DOSE_CAP = 9.5,                         // a potion's name: the wheel's four captions, smaller than a key's binding
+-    K_STYLE_DOSE_GRAB = 1.15,                       // how near the wheel's centre a touch-down takes it (times the rim's radius)
++    K_STYLE_DOSE_X = 245, K_STYLE_DOSE_Y = 135,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
++    K_STYLE_DOSE_R = 36, K_STYLE_DOSE_ART = 29,     // the rim its slots sit on, a flask's size
++    K_STYLE_DOSE_CAP = 10.5,                         // a potion's name: the wheel's four captions, smaller than a key's binding
++    K_STYLE_DOSE_GRAB = 1.62,                       // how near the wheel's centre a touch-down takes it (times the rim's radius)
+     K_STYLE_PILL_W = 76, K_STYLE_PILL_H = 40,       // − / +: the glyph over its sign, a taller target than the pad layouts' pair
+     K_STYLE_PILL_DX = 64, K_STYLE_PILL_Y = 30,      // and that much further out, clear of the menu button between them
+     K_STYLE_PILL_ART = 26,                          // the glyph on the pill
+     K_STYLE_SIDE_X = 44, K_STYLE_SIDE_Y = 46,       // L / R: high on each side, radius
+     K_STYLE_SIDE_R = 22, K_STYLE_SIDE_ART = 34,
+     K_STYLE_CAP = 10.5,                             // the binding under a glyph: small type, a caption and not a label
+-    K_STYLE_CAP_GAP = 8,                            // between the glyph's edge and that caption
++    K_STYLE_CAP_GAP = 4,                            // between the glyph's edge and that caption
+     K_STYLE_IDLE = 0.80, K_STYLE_LIT = 1.0,         // a glyph's opacity at rest and under a finger
+     K_STYLE_PRESS = 0.92;                           // and how far it shrinks when pressed
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
+@@ -191,13 +191,12 @@
+     BOOL _full, _tap, _style, _hidden;             // the 3D / Tap / Game style / Hidden layout is current
+     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
+     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
+-    CAShapeLayer *_doseRing;                       // the Game style layout's one stroke: the rim the potion wheel's slots sit on
+     DmLayout _layout;
+     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+ }
+ 
+ static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
+-static UIColor *k_sIdle, *k_sOn, *k_sLine, *k_sLineHot, *k_sText, *k_sTextOn;   // the Game style layout: the game's gold on dark
++static UIColor *k_sIdle, *k_sOn, *k_sLine, *k_sText, *k_sTextOn;   // the Game style layout: the game's gold on dark
+ static CAShapeLayer *shape(CALayer *parent) {
+     CAShapeLayer *l = [CAShapeLayer layer];
+     l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
+@@ -214,26 +213,44 @@
+     [parent addSublayer:t]; return t;
+ }
+ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
+-static BOOL styleKey(int b) { return b <= B_Y || (b >= B_L && b <= B_DOWN); }   // the Game style layout's keys: A / B / X / Y, the shoulders and triggers, − / +, the potion wheel (no L3 / R3)
+-static int artFor(int b) {   // the glyph for a key: what it does on this game's screen, not which button it is
+-    switch (b) {
+-        case B_ZR: return DM_ART_CAST; case B_ZL: return DM_ART_WARD;
+-        case B_A: return DM_ART_DODGE; case B_B: return DM_ART_JUMP;
+-        case B_X: return DM_ART_ANCIENT; case B_Y: return DM_ART_INTERACT;
+-        case B_L: return DM_ART_SETWHEEL; case B_R: return DM_ART_CYCLE;
+-        case B_PLUS: return DM_ART_PAUSE; case B_MINUS: return DM_ART_MAP;
+-        case B_UP: return DM_ART_VIAL_HEAL; case B_LEFT: return DM_ART_VIAL_FOCUS;
+-        case B_DOWN: return DM_ART_VIAL_POWER; case B_RIGHT: return DM_ART_VIAL_GUARD;
+-        default: return -1;   // the 3D layout's keys carry no glyph
+-    }
+-}
+-static CALayer *artLayer(CALayer *parent, int which) {   // a glyph on a layer of its own, so a press costs an opacity and a scale
+-    CALayer *l = [CALayer layer];
+-    l.contents = (__bridge id)dm_pad_art(which);
+-    l.contentsGravity = kCAGravityResizeAspect;
+-    l.opacity = K_STYLE_IDLE;
+-    [parent addSublayer:l];
+-    return l;
++static UIImage *symbolArt(NSString *name) {
++    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:80 weight:UIImageSymbolWeightMedium];
++    UIImage *symbol = [UIImage systemImageNamed:name withConfiguration:config];
++    if (!symbol) return nil;
++    UIColor *gold = [UIColor colorWithRed:0.98 green:0.87 blue:0.62 alpha:1];
++    symbol = [symbol imageWithTintColor:gold renderingMode:UIImageRenderingModeAlwaysOriginal];
++    CGSize canvas = CGSizeMake(128, 128);
++    CGFloat scale = 100 / MAX(symbol.size.width, symbol.size.height);
++    CGSize draw = CGSizeMake(symbol.size.width * scale, symbol.size.height * scale);
++    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
++    format.scale = 1;
++    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvas format:format];
++    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
++        CGContextSetShadowWithColor(context.CGContext, CGSizeMake(0, 1), 3, UIColor.blackColor.CGColor);
++        [symbol drawInRect:CGRectMake((canvas.width - draw.width) / 2, (canvas.height - draw.height) / 2,
++                                      draw.width, draw.height)];
++    }];
++}
++static CALayer *artLayer(CALayer *parent, int button) {
++    static NSString *const symbols[B_N] = {
++        [B_ZR] = @"wand.and.stars", [B_ZL] = @"scope", [B_L] = @"flask", [B_R] = @"sparkle",
++        [B_LEFT] = @"eye", [B_RIGHT] = @"book.closed", [B_DOWN] = @"location",
++    };
++    static const int artwork[B_N] = {
++        [B_A] = DM_ART_DODGE + 1, [B_B] = DM_ART_JUMP + 1, [B_X] = DM_ART_WARD + 1,
++        [B_Y] = DM_ART_INTERACT + 1, [B_UP] = DM_ART_VIAL_HEAL + 1,
++        [B_PLUS] = DM_ART_PAUSE + 1, [B_MINUS] = DM_ART_MAP + 1,
++    };
++    UIImage *image = symbols[button] ? symbolArt(symbols[button]) : nil;
++    CGImageRef glyph = image.CGImage;
++    if (!glyph && artwork[button]) glyph = dm_pad_art(artwork[button] - 1);
++    if (!glyph) return nil;
++    CALayer *layer = [CALayer layer];
++    layer.contents = (__bridge id)glyph;
++    layer.contentsGravity = kCAGravityResizeAspect;
++    layer.opacity = K_STYLE_IDLE;
++    [parent addSublayer:layer];
++    return layer;
+ }
+ static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMake(0, 0, size, size); l.position = c; }   // a glyph of this size, centred on c
+ 
+@@ -255,22 +272,20 @@
+             // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
+             k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
+             k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
+-            k_sLine = [UIColor colorWithRed:0.86 green:0.74 blue:0.47 alpha:0.62]; k_sLineHot = [UIColor colorWithRed:1 green:0.93 blue:0.72 alpha:0.95];
++            k_sLine = [UIColor colorWithRed:0.86 green:0.74 blue:0.47 alpha:0.62];
+             k_sIdle = [UIColor colorWithRed:0.72 green:0.62 blue:0.40 alpha:0.14]; k_sOn = [UIColor colorWithRed:1 green:0.90 blue:0.62 alpha:0.52];
+-            k_sText = [UIColor colorWithRed:0.95 green:0.89 blue:0.73 alpha:0.85]; k_sTextOn = [UIColor colorWithRed:0.10 green:0.08 blue:0.05 alpha:0.85];
++            k_sText = [UIColor colorWithRed:0.95 green:0.89 blue:0.73 alpha:0.85]; k_sTextOn = [UIColor colorWithRed:1 green:0.96 blue:0.80 alpha:1];
+         });
+         _controls = [CALayer layer]; [self.layer addSublayer:_controls];
+-        _doseRing = shape(_controls); _doseRing.fillColor = nil; _doseRing.lineWidth = 1.6; _doseRing.lineCap = kCALineCapRound; _doseRing.shadowOpacity = 0;
+         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
+         _knob = shape(_controls);
+         CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
+         [_knob addSublayer:in];
+-        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"专注", @"治疗", @"护盾", @"力量"};   // the potion wheel's slots are captioned with the potion: the glyph says which bottle, the type says what it does
++        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"←", @"↑", @"→", @"↓"};
+         for (int b = 0; b < B_N; b++) {
+             _key[b] = shape(_controls);
+-            if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label; the potion wheel's slots do
+-            int which = artFor(b);
+-            if (which >= 0) _art[b] = artLayer(_controls, which);   // what the key does, as the artwork drew it
++            _label[b] = label(_key[b], names[b]);
++            _art[b] = artLayer(_controls, b);
+         }
+         _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
+         _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
+@@ -297,12 +312,15 @@
+ }
+ - (void)applyLayout {   // show / hide the controls for the current layout
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+-    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (fullOnly(b) && !_full);   // in the Game style layout the glyph is the key: the shape keeps no path, so only its caption shows
++    for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (fullOnly(b) && !_full && !(_style && b >= B_LEFT));   // in the Game style layout the glyph is the key: the shape keeps no path, so only its caption shows
+         if (_style) { _key[b].path = NULL; _key[b].shadowPath = NULL; }   // and the path a previous layout left behind is cleared, not merely hidden
+         if (_art[b]) _art[b].hidden = !_style;           // the glyphs are the Game style layout's alone
+         if (b >= B_LEFT) _label[b].hidden = !_style; }   // the D-pad arms carry no caption; the potion wheel's slots do
+     _ring.hidden = _knob.hidden = _tap;
+-    _doseRing.hidden = !_style;
++    _knob.sublayers.firstObject.hidden = _style;
++    _menu.backgroundColor = _style ? UIColor.clearColor : k_idle;
++    _menu.layer.borderWidth = _style ? 0 : 1.5;
++    _menu.tintColor = _style ? k_sText : k_text;
+     [CATransaction commit];
+     _controls.hidden = _padOff || _hidden;   // Hidden, or a controller on: the screen shows the game and nothing else
+     _menu.alpha = _hidden ? 0.22 : 1;        // still there and still a touch target: it is the only way back
+@@ -333,7 +351,7 @@
+ }
+ - (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }
+ - (CGRect)corner { if (_layout.separated) return self.safe; UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
+-- (CGFloat)u { if (_layout.separated) { CGRect s = self.safe; return MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3); } return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
++- (CGFloat)u { if (_layout.separated || _style) { CGRect s = self.safe; return MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3); } return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
+ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
+ - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
+ - (CGPoint)portraitThumbCenter:(BOOL)right {
+@@ -425,7 +443,7 @@
+         CGFloat d = [self buttonDistance:b point:p];
+         if (d <= 1 && (best < 0 || d < distance)) {
+             best = b; distance = d;
+-            if (!_layout.separated) return b;
++            if (!_style && !_layout.separated) return b;
+         }
+     }
+     return best;
+@@ -601,16 +619,6 @@
+     for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
+     CGPathCloseSubpath(p); return p;
+ }
+-// The Game style layout's glyphs are pictures now (DmPadArt.h), so the strokes that used to draw them are gone
+-// with the discs and the engraving: a key costs one CALayer, and nothing is redrawn when the screen changes.
+-static CGPathRef doseRingPath(CGPoint c, CGFloat r, CGFloat len) {   // the potion wheel's rim, and a tick in each gap between its slots
+-    CGMutablePathRef p = CGPathCreateMutable();
+-    CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r));
+-    for (int i = 0; i < 4; i++) { CGFloat a = M_PI_4 + i * M_PI_2;
+-        CGPathMoveToPoint(p, NULL, c.x + (r + len) * cos(a), c.y + (r + len) * sin(a));
+-        CGPathAddLineToPoint(p, NULL, c.x + r * cos(a), c.y + r * sin(a)); }
+-    return p;
+-}
+ static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
+ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+     CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
+@@ -634,7 +642,7 @@
+     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
+         if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
+             placeArt(_art[b], c, K_STYLE_FACE_ART * u);
+-            placeLabelAt(_label[b], c, K_STYLE_CAP * u, K_STYLE_FACE_ART * u / 2 + K_STYLE_CAP_GAP * u);
++            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * u, 9), K_STYLE_FACE_ART * u / 2 + K_STYLE_CAP_GAP * u);
+         } else {
+             setPath(_key[b], circlePath(c, self.faceR));
+             placeLabel(_label[b], c, 20 * u);
+@@ -643,7 +651,7 @@
+         if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
+             CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
+             placeArt(_art[b], c, art);
+-            placeLabelAt(_label[b], c, K_STYLE_CAP * u, art / 2 + K_STYLE_CAP_GAP * u);
++            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * u, 9), art / 2 + K_STYLE_CAP_GAP * u);
+         } else if (isDrop(b)) {
+             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
+             setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
+@@ -663,22 +671,19 @@
+     if (!_style) {   // the D-pad: the 3D layout only
+         static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
+         for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+-    } else {   // the potion wheel: four slots on its rim, a flask in each and the potion named under it
++    } else {   // four directional shortcuts with their controller bindings
+         static const int slot[4] = {B_UP, B_RIGHT, B_DOWN, B_LEFT};   // from the top, round
+         CGPoint c = self.dpadCenter; CGFloat r = self.dpadR, art = K_STYLE_DOSE_ART * u;
+-        setPath(_doseRing, doseRingPath(c, r, 7 * u));
+         for (int i = 0; i < 4; i++) { double a = -M_PI_2 + i * M_PI_2;
+             CGPoint here = CGPointMake(c.x + r * cos(a), c.y + r * sin(a));
+             placeArt(_art[slot[i]], here, art);
+-            // the name goes outward along the slot's own radius, so each one sits under its own flask and the
+-            // four of them never share a line: inside the rim they collided in the middle of the wheel.
+-            CGFloat out = r + art / 2 + K_STYLE_CAP_GAP * 1.6 * u;   // clear of the flask's widest point, cork included
+-            placeLabel(_label[slot[i]], CGPointMake(c.x + out * cos(a), c.y + out * sin(a)), K_STYLE_DOSE_CAP * u); }
++            placeLabelAt(_label[slot[i]], here, MAX(K_STYLE_DOSE_CAP * u, 9), (K_STYLE_DOSE_ART / 2 + K_STYLE_CAP_GAP) * u);
++        }
+     }
+     CGFloat mr = K_MENU_R * u; CGPoint mc = self.menuCenter;
+     _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
+-    _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
+-    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
++    _menu.layer.shadowPath = _style ? nil : [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
++    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:MAX((_style ? 17 : 13) * u, 10) weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
+     _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
+     CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+@@ -702,7 +707,7 @@
+             _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
+     CGPoint h = self.stickHome, o = [self knobOffset:0];
+     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
+-    _ring.strokeColor = line.CGColor; _doseRing.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor;
++    _ring.strokeColor = (_style && !_stick[0] ? [line colorWithAlphaComponent:0.32] : line).CGColor;
+     [CATransaction commit];
+ }
+ 
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -508,6 +508,14 @@
+         }
+         front_ios_audio_apply();
+     }];
++    [nc addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
++        AVAudioSession *s = AVAudioSession.sharedInstance;
++        NSMutableArray<NSString *> *types = [NSMutableArray array];
++        for (AVAudioSessionPortDescription *output in s.currentRoute.outputs) [types addObject:output.portType];
++        LOG("audio session: route change %lu, outputs %s, %.0f Hz, %.2f ms",
++            (unsigned long)[n.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue],
++            [types componentsJoinedByString:@","].UTF8String, s.sampleRate, s.IOBufferDuration * 1000);
++    }];
+     [nc addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+         (void)n; LOG("audio session: the media services were reset; setting the session and the outputs up again");
+         front_ios_audio_session(); dm_audio_reset();
+--- a/dm/games/game.py
++++ b/dm/games/game.py
+@@ -185,7 +185,7 @@
+     sf = g.get('shared_font', 'bfttf')   # what the shared-font address points at (hle_sdk16.c): bfttf = 8-byte header + TTF, ttf = the TTF alone
+     if sf not in ('bfttf', 'ttf'): sys.exit(f'{g.id}: shared_font must be bfttf or ttf: {sf}')
+     pl = g.get('pad_layout', 'simple')   # the virtual gamepad's first layout (DmGamepad.m; afterwards whatever the player switched to in game is kept): simple = 2D, full = 3D (D-pad, right stick, L3 / R3),
+-    if pl not in ('simple', 'full', 'touch'): sys.exit(f'{g.id}: pad_layout must be simple, full or touch: {pl}')   # touch = Tap (no control: every touch goes to the game's touch screen)
++    if pl not in ('simple', 'full', 'touch', 'style', 'hidden'): sys.exit(f'{g.id}: invalid pad_layout: {pl}')   # touch = Tap (no control: every touch goes to the game's touch screen)
+     sks = g.get('shader_key_skip', '')   # control-section bytes the shader keys hash as zeros, <offset>+<length> (hle_nvn.c keys_hash, shader_split.py key_ctl; Batman: Arkham Knight: GLSLC's compile information, 0x770+0x78)
+     m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)\+(0x[0-9a-fA-F]+|\d+)', sks) if sks else None
+     if sks and (not m or not 0x30 <= int(m[1], 0) or not 0 < int(m[2], 0) or int(m[1], 0) + int(m[2], 0) > 0x880 or (int(m[1], 0) < 0x760 and int(m[1], 0) + int(m[2], 0) > 0x700)):   # not over +0x700..+0x75f, the code area and compute fields the tools read
