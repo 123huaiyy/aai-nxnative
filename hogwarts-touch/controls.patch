@@ -185,7 +185,20 @@
          }
      }
      return best;
-@@ -601,16 +619,6 @@
+@@ -556,6 +574,12 @@
+     for (UITouch *t in ts) {
+         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
+         if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
++        else if (_style && c == C_BTN && (v >> 8) == B_ZR) {
++            // Keep ZR held while this finger selects a spell slot. The normal release path clears both.
++            int hit = [self btnAt:p];
++            if (hit >= B_A && hit <= B_Y) [_faceOf setObject:@(1ull << hit) forKey:t];
++            else [_faceOf removeObjectForKey:t];
++        }
+         else if (c == C_STICK) { _stickNow[v >> 8] = p;
+             if ((v >> 8) == 1) { CGFloat d = dist(p, _rCentre), R = [self stickR:1];   // the right stick's centre follows a finger past its radius, so turning back responds at once
+                 if (d > R) _rCentre = CGPointMake(p.x - (p.x - _rCentre.x) * R / d, p.y - (p.y - _rCentre.y) * R / d); } }
+@@ -601,16 +625,6 @@
      for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
      CGPathCloseSubpath(p); return p;
  }
@@ -202,7 +215,7 @@
  static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
  static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
-@@ -634,7 +642,7 @@
+@@ -634,7 +648,7 @@
      for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
          if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
              placeArt(_art[b], c, K_STYLE_FACE_ART * u);
@@ -211,7 +224,7 @@
          } else {
              setPath(_key[b], circlePath(c, self.faceR));
              placeLabel(_label[b], c, 20 * u);
-@@ -643,7 +651,7 @@
+@@ -643,7 +657,7 @@
          if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
              CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
              placeArt(_art[b], c, art);
@@ -220,7 +233,7 @@
          } else if (isDrop(b)) {
              BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
              setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
-@@ -663,22 +671,19 @@
+@@ -663,22 +677,19 @@
      if (!_style) {   // the D-pad: the 3D layout only
          static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
          for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
@@ -248,7 +261,7 @@
      setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
      _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
      CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
-@@ -702,7 +707,7 @@
+@@ -702,7 +713,7 @@
              _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
      CGPoint h = self.stickHome, o = [self knobOffset:0];
      _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
@@ -285,3 +298,36 @@
      sks = g.get('shader_key_skip', '')   # control-section bytes the shader keys hash as zeros, <offset>+<length> (hle_nvn.c keys_hash, shader_split.py key_ctl; Batman: Arkham Knight: GLSLC's compile information, 0x770+0x78)
      m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)\+(0x[0-9a-fA-F]+|\d+)', sks) if sks else None
      if sks and (not m or not 0x30 <= int(m[1], 0) or not 0 < int(m[2], 0) or int(m[1], 0) + int(m[2], 0) > 0x880 or (int(m[1], 0) < 0x760 and int(m[1], 0) + int(m[2], 0) > 0x700)):   # not over +0x700..+0x75f, the code area and compute fields the tools read
+--- a/dm/host/hle_audren.c
++++ b/dm/host/hle_audren.c
+@@ -96,6 +96,7 @@
+     void *render_tt;                         // the render thread (ThreadType from dm_guest_thread_spawn): Close joins it before the SDK tears the renderer down
+     int16_t frame[FRAME_MAX * 2]; int frame_n;   // the latest frame (stereo int16)
+     _Atomic uint64_t frames, nonsilent, updates, renders, catchups;
++    uint64_t clipped_frames;   // only touched while capture holds g_render_mu
+     uint64_t last_r; int updated;            // the render count at the last update, once there was one
+     int16_t cq[CQ][FRAME_MAX * 2]; int cq_n[CQ]; _Atomic uint32_t cq_head, cq_tail;   // output queue of catch-up frames
+     pthread_mutex_t cq_mu; pthread_cond_t cq_cv;   // the render thread signals each frame it takes off the queue (catch-up pacing)
+@@ -407,12 +408,20 @@
+             }
+             uint32_t nout = rate == 48000 ? samples : up_3_2(a, st, samples, st);
+             uint64_t loud = 0;
++            int clipped = 0;
+             for (uint32_t s = 0; s < 2 * nout; s++) {
+-                int32_t v = st[s]; v = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
++                int32_t v = st[s];
++                clipped |= v > 32767 || v < -32768;
++                v = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+                 dst[s] = (int16_t)v; loud |= (uint64_t)v;
+             }
+             atomic_fetch_add(&a->frames, 1); if (loud) atomic_fetch_add(&a->nonsilent, 1);
+-            uint64_t f = atomic_load(&a->frames); if (f == 200 || f % 12000 == 0) LOG("audren: renderer %d rendered %llu frames, %llu of them not silent", ar_index(a), (unsigned long long)f, (unsigned long long)atomic_load(&a->nonsilent));
++            a->clipped_frames += clipped;
++            uint64_t f = atomic_load(&a->frames);
++            if (f == 200 || f % 12000 == 0)
++                LOG("audren: renderer %d rendered %llu frames, %llu not silent, %llu clipped above PCM range",
++                    ar_index(a), (unsigned long long)f, (unsigned long long)atomic_load(&a->nonsilent),
++                    (unsigned long long)a->clipped_frames);
+             return (int)nout;
+         }
+         c += size;
