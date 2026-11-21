@@ -56,7 +56,7 @@
  static CAShapeLayer *shape(CALayer *parent) {
      CAShapeLayer *l = [CAShapeLayer layer];
      l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
-@@ -214,26 +213,44 @@
+@@ -214,26 +213,52 @@
      [parent addSublayer:t]; return t;
  }
  static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // keys shown only in the 3D layout
@@ -80,21 +80,21 @@
 -    l.opacity = K_STYLE_IDLE;
 -    [parent addSublayer:l];
 -    return l;
-+static UIImage *symbolArt(NSString *name) {
-+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:80 weight:UIImageSymbolWeightMedium];
-+    UIImage *symbol = [UIImage systemImageNamed:name withConfiguration:config];
-+    if (!symbol) return nil;
++static UIImage *renderArt(UIImage *icon, CGFloat fill) {
++    if (!icon) return nil;
++    const CGFloat longest = MAX(icon.size.width, icon.size.height);
++    if (longest <= 0) return nil;
 +    UIColor *gold = [UIColor colorWithRed:0.98 green:0.87 blue:0.62 alpha:1];
-+    symbol = [symbol imageWithTintColor:gold renderingMode:UIImageRenderingModeAlwaysOriginal];
++    icon = [icon imageWithTintColor:gold renderingMode:UIImageRenderingModeAlwaysOriginal];
 +    CGSize canvas = CGSizeMake(128, 128);
-+    CGFloat scale = 100 / MAX(symbol.size.width, symbol.size.height);
-+    CGSize draw = CGSizeMake(symbol.size.width * scale, symbol.size.height * scale);
++    CGFloat scale = fill / longest;
++    CGSize draw = CGSizeMake(icon.size.width * scale, icon.size.height * scale);
 +    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
 +    format.scale = 1;
 +    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvas format:format];
 +    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
 +        CGContextSetShadowWithColor(context.CGContext, CGSizeMake(0, 1), 3, UIColor.blackColor.CGColor);
-+        [symbol drawInRect:CGRectMake((canvas.width - draw.width) / 2, (canvas.height - draw.height) / 2,
++        [icon drawInRect:CGRectMake((canvas.width - draw.width) / 2, (canvas.height - draw.height) / 2,
 +                                      draw.width, draw.height)];
 +    }];
 +}
@@ -108,9 +108,17 @@
 +        [B_Y] = DM_ART_INTERACT + 1, [B_UP] = DM_ART_VIAL_HEAL + 1,
 +        [B_PLUS] = DM_ART_PAUSE + 1, [B_MINUS] = DM_ART_MAP + 1,
 +    };
-+    UIImage *image = symbols[button] ? symbolArt(symbols[button]) : nil;
++    UIImage *icon = nil;
++    if (symbols[button]) {
++        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:80 weight:UIImageSymbolWeightMedium];
++        icon = [UIImage systemImageNamed:symbols[button] withConfiguration:config];
++    }
++    if (!icon && artwork[button]) {
++        CGImageRef original = dm_pad_art(artwork[button] - 1);
++        if (original) icon = [UIImage imageWithCGImage:original];
++    }
++    UIImage *image = renderArt(icon, symbols[button] ? 100 : 128);
 +    CGImageRef glyph = image.CGImage;
-+    if (!glyph && artwork[button]) glyph = dm_pad_art(artwork[button] - 1);
 +    if (!glyph) return nil;
 +    CALayer *layer = [CALayer layer];
 +    layer.contents = (__bridge id)glyph;
@@ -121,7 +129,7 @@
  }
  static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMake(0, 0, size, size); l.position = c; }   // a glyph of this size, centred on c
  
-@@ -255,22 +272,20 @@
+@@ -255,22 +280,20 @@
              // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
              k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
              k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
@@ -149,7 +157,7 @@
          }
          _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
          _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
-@@ -297,12 +312,15 @@
+@@ -297,12 +320,15 @@
  }
  - (void)applyLayout {   // show / hide the controls for the current layout
      [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -167,7 +175,7 @@
      [CATransaction commit];
      _controls.hidden = _padOff || _hidden;   // Hidden, or a controller on: the screen shows the game and nothing else
      _menu.alpha = _hidden ? 0.22 : 1;        // still there and still a touch target: it is the only way back
-@@ -333,7 +351,7 @@
+@@ -333,7 +359,7 @@
  }
  - (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }
  - (CGRect)corner { if (_layout.separated) return self.safe; UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
@@ -176,7 +184,7 @@
  static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
  - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
  - (CGPoint)portraitThumbCenter:(BOOL)right {
-@@ -425,7 +443,7 @@
+@@ -425,7 +451,7 @@
          CGFloat d = [self buttonDistance:b point:p];
          if (d <= 1 && (best < 0 || d < distance)) {
              best = b; distance = d;
@@ -185,7 +193,7 @@
          }
      }
      return best;
-@@ -556,6 +574,12 @@
+@@ -556,6 +582,12 @@
      for (UITouch *t in ts) {
          uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
          if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
@@ -198,7 +206,7 @@
          else if (c == C_STICK) { _stickNow[v >> 8] = p;
              if ((v >> 8) == 1) { CGFloat d = dist(p, _rCentre), R = [self stickR:1];   // the right stick's centre follows a finger past its radius, so turning back responds at once
                  if (d > R) _rCentre = CGPointMake(p.x - (p.x - _rCentre.x) * R / d, p.y - (p.y - _rCentre.y) * R / d); } }
-@@ -601,16 +625,6 @@
+@@ -601,16 +633,6 @@
      for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
      CGPathCloseSubpath(p); return p;
  }
@@ -215,7 +223,7 @@
  static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
  static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
-@@ -634,7 +648,7 @@
+@@ -634,7 +656,7 @@
      for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
          if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
              placeArt(_art[b], c, K_STYLE_FACE_ART * u);
@@ -224,7 +232,7 @@
          } else {
              setPath(_key[b], circlePath(c, self.faceR));
              placeLabel(_label[b], c, 20 * u);
-@@ -643,7 +657,7 @@
+@@ -643,7 +665,7 @@
          if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
              CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
              placeArt(_art[b], c, art);
@@ -233,7 +241,7 @@
          } else if (isDrop(b)) {
              BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
              setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
-@@ -663,22 +677,19 @@
+@@ -663,22 +685,19 @@
      if (!_style) {   // the D-pad: the 3D layout only
          static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
          for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
@@ -261,7 +269,7 @@
      setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
      _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
      CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
-@@ -702,7 +713,7 @@
+@@ -702,7 +721,7 @@
              _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
      CGPoint h = self.stickHome, o = [self knobOffset:0];
      _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
