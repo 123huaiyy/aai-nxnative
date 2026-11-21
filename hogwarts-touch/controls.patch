@@ -45,7 +45,7 @@
      NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
      CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one shape per key (the pad layouts) and its caption
      CALayer *_art[B_N];                                 // the Game style layout's glyph for that key: a CGImage from DmPadArt.h
-+    CALayer *_knobArt;
++    CALayer *_ringArt, *_knobArt;
 +    UIImage *_menuArt;
      CAShapeLayer *_ring, *_knob;                   // the left stick (the right one is not drawn)
      DmMenuButton *_menu;                           // opens the in-game menu (GameMenu.swift)
@@ -151,7 +151,7 @@
  }
  static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMake(0, 0, size, size); l.position = c; }   // a glyph of this size, centred on c
  
-@@ -255,22 +295,29 @@
+@@ -255,22 +295,36 @@
              // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
              k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
              k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
@@ -164,6 +164,13 @@
          _controls = [CALayer layer]; [self.layer addSublayer:_controls];
 -        _doseRing = shape(_controls); _doseRing.fillColor = nil; _doseRing.lineWidth = 1.6; _doseRing.lineCap = kCALineCapRound; _doseRing.shadowOpacity = 0;
          _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
++        UIImage *track = bundledPadImage(@"stick_track");
++        if (track.CGImage) {
++            _ringArt = [CALayer layer];
++            _ringArt.contents = (__bridge id)track.CGImage;
++            _ringArt.contentsGravity = kCAGravityResizeAspect;
++            [_controls addSublayer:_ringArt];
++        }
          _knob = shape(_controls);
          CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
          [_knob addSublayer:in];
@@ -188,7 +195,7 @@
          }
          _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
          _menu.backgroundColor = k_idle; _menu.layer.borderColor = k_line.CGColor; _menu.layer.borderWidth = 1.5;
-@@ -297,12 +344,16 @@
+@@ -297,12 +351,17 @@
  }
  - (void)applyLayout {   // show / hide the controls for the current layout
      [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -201,13 +208,14 @@
 -    _doseRing.hidden = !_style;
 +    _knob.sublayers.firstObject.hidden = _style;
 +    _knobArt.hidden = !_style;
++    _ringArt.hidden = !_style;
 +    _menu.backgroundColor = _style ? UIColor.clearColor : k_idle;
 +    _menu.layer.borderWidth = _style ? 0 : 1.5;
 +    _menu.tintColor = _style ? k_sText : k_text;
      [CATransaction commit];
      _controls.hidden = _padOff || _hidden;   // Hidden, or a controller on: the screen shows the game and nothing else
      _menu.alpha = _hidden ? 0.22 : 1;        // still there and still a touch target: it is the only way back
-@@ -333,7 +384,7 @@
+@@ -333,7 +392,7 @@
  }
  - (CGRect)safe { return CGRectIntersection(_layout.controls, UIEdgeInsetsInsetRect(self.bounds, dm_game_safe_insets(self.bounds, self.safeAreaInsets, _layout.topSafeOnly))); }
  - (CGRect)corner { if (_layout.separated) return self.safe; UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
@@ -216,7 +224,7 @@
  static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
  - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
  - (CGPoint)portraitThumbCenter:(BOOL)right {
-@@ -425,7 +476,7 @@
+@@ -425,7 +484,7 @@
          CGFloat d = [self buttonDistance:b point:p];
          if (d <= 1 && (best < 0 || d < distance)) {
              best = b; distance = d;
@@ -225,7 +233,7 @@
          }
      }
      return best;
-@@ -556,6 +607,12 @@
+@@ -556,6 +615,12 @@
      for (UITouch *t in ts) {
          uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
          if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
@@ -238,7 +246,7 @@
          else if (c == C_STICK) { _stickNow[v >> 8] = p;
              if ((v >> 8) == 1) { CGFloat d = dist(p, _rCentre), R = [self stickR:1];   // the right stick's centre follows a finger past its radius, so turning back responds at once
                  if (d > R) _rCentre = CGPointMake(p.x - (p.x - _rCentre.x) * R / d, p.y - (p.y - _rCentre.y) * R / d); } }
-@@ -601,16 +658,6 @@
+@@ -601,16 +666,6 @@
      for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
      CGPathCloseSubpath(p); return p;
  }
@@ -255,7 +263,7 @@
  static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
  static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
-@@ -634,7 +681,7 @@
+@@ -634,7 +689,7 @@
      for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
          if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
              placeArt(_art[b], c, K_STYLE_FACE_ART * u);
@@ -264,7 +272,7 @@
          } else {
              setPath(_key[b], circlePath(c, self.faceR));
              placeLabel(_label[b], c, 20 * u);
-@@ -643,7 +690,7 @@
+@@ -643,7 +698,7 @@
          if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
              CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
              placeArt(_art[b], c, art);
@@ -273,7 +281,7 @@
          } else if (isDrop(b)) {
              BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
              setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
-@@ -663,26 +710,38 @@
+@@ -663,26 +718,45 @@
      if (!_style) {   // the D-pad: the 3D layout only
          static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
          for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
@@ -296,6 +304,7 @@
      _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
 -    _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
 -    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+-    setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
 +    _menu.layer.shadowPath = _style ? nil : [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
 +    UIImage *menuImage = nil;
 +    CGFloat gs = MAX((_style ? 20 : 13) * u, 10);
@@ -311,22 +320,31 @@
 +            [UIImageSymbolConfiguration configurationWithPointSize:gs weight:UIImageSymbolWeightSemibold]];
 +    }
 +    [_menu setImage:menuImage forState:UIControlStateNormal];
-     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
++    CGFloat stickRadius = [self stickR:0];
++    if (_style && _ringArt) {
++        _ring.path = nil;
++        _ring.shadowPath = nil;
++        placeArt(_ringArt, self.stickHome, 2 * stickRadius);
++    } else {
++        setPath(_ring, circlePath(self.stickHome, stickRadius));
++    }
      _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
      CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
 -    setPath(_knob, circlePath(CGPointMake(k, k), k));
 +    if (_style && _knobArt) { _knob.path = nil; _knob.shadowPath = nil; }
 +    else setPath(_knob, circlePath(CGPointMake(k, k), k));
-+    _knobArt.frame = CGRectInset(_knob.bounds, k * 0.26, k * 0.26);
++    _knobArt.frame = _knob.bounds;
      CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
      in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
      [CATransaction commit];
-@@ -702,7 +761,7 @@
+@@ -702,7 +776,9 @@
              _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
      CGPoint h = self.stickHome, o = [self knobOffset:0];
      _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
 -    _ring.strokeColor = line.CGColor; _doseRing.strokeColor = (_stick[0] ? k_sLineHot : k_sLine).CGColor;
 +    _ring.strokeColor = (_style && !_stick[0] ? [line colorWithAlphaComponent:0.32] : line).CGColor;
++    _ringArt.opacity = _stick[0] ? 0.92 : 0.66;
++    _knobArt.opacity = _stick[0] ? K_STYLE_LIT : K_STYLE_IDLE;
      [CATransaction commit];
  }
  
