@@ -1,0 +1,43 @@
+{
+  "game": "0100F7E00C70E000",
+  "game_tsv": "# Provisional profile for the BASE game (cart's Application meta, 1.0.0) from profile_guess.py\n# the cart's on-cart update is a different build set: main 0c00fc37b0610fbd, sdk 1ea0b9fe6cd6867b, SDK 17.5.4, RomFS 13.21 GB merged\n# mem_reserve 0x1028000000 (62 GB) is Unreal's nninitStartup region; ue_malloc.py cuts the allocator and ue_region.py gives an iPhone what the alias region has room for\n# sys_resource 0x1000000 = the NPDM's 16 MB, so virtual address memory is on\nmodules\tmain subsdk0 sdk\n# The block the HOST reserves, not what the game asks for: the game asks 0x1028000000 (64 GB) at nninitStartup and the rewriter's engine-wide gate on that store (dm/tools/ue_region.py)\n# hands it the alias region's room instead. 0xF0000000 / alias 0xC8000000 is the pairing both UE 4.2x profiles on hand use with this same app_pool 0xCD500000 (OCTOPATH TRAVELER II, Mario & Luigi: Brothership):\n# 256 MB front + 3.125 GB alias + 256 MB stack + 128 MB heap region\nmem_reserve\t0xF0000000\nmem_alias\t0xC8000000\nmem_stack\t0x10000000\napp_pool\t0xCD500000\nsys_resource\t0x1000000\nshader_groups\tShaderArchive-Global-=global ShaderArchive-=game\ntitle_id\t0100F7E00C70E000\nprogram_id\t0100F7E00C70E000\nname\tHogwarts Legacy\nipa\tHogwartsLegacy.ipa\napp_category\tpublic.app-category.games\nromfs_marker\tPhoenix/Content/Paks/pakchunk0-Switch.pak\ndisplay_version\t1.0.0\nbuild\t0\t1.0.0\tmain=70658a5c238d69c24698fded6a34efa6\tsdk=835c229763ce5c1816a70f875bd70ccd\tsubsdk0=7c1a58cac01c4aa3935c6243f69cf0d3\trtld=1c6daa47389cb7915f054cbe9750a98e\npad_layout\tstyle\ntex_dyn_slots\ton\ntex_flush_upload\ton\ntex_dirty_upload\ton\npresent_interval\tdisplay\nshader_note\tHogwarts Legacy (Unreal Engine 4.27.2, project Phoenix) shaders: the two decoded shader code archives, whose every record is an LSLG of one stage; the engine combines vertex and pixel shaders per draw from its pipeline state, so they pair through separable_pairs\n",
+  "display_name": "Hogwarts Legacy",
+  "version": "1.0.0",
+  "language": "en-US",
+  "bundle_id": "org.nxnative.0100f7e00c70e000",
+  "app_category": "public.app-category.games",
+  "modules": [
+    {
+      "name": "main",
+      "size": 130384688,
+      "header": {
+        "PATCH_OFF": "-0x2000000",
+        "KEY_PAGE_OFF": "0x9aac000",
+        "KEY_PAGE_SIZE": "0x4000",
+        "TEXT_END": "0x5d7b750",
+        "IMAGE_SIZE": "0x9ab0000",
+        "FILE_IMAGE_LEN": "0x7a5c000"
+      }
+    },
+    {
+      "name": "subsdk0",
+      "size": 7468840,
+      "header": {
+        "PATCH_OFF": "0x6c0000",
+        "KEY_PAGE_OFF": "0x6b4000",
+        "KEY_PAGE_SIZE": "0x4000",
+        "TEXT_END": "0x345b00"
+      }
+    },
+    {
+      "name": "sdk",
+      "size": 15302224,
+      "header": {
+        "PATCH_OFF": "0xe10000",
+        "KEY_PAGE_OFF": "0xe08000",
+        "KEY_PAGE_SIZE": "0x4000",
+        "TEXT_END": "0x5e78e0"
+      }
+    }
+  ]
+}
