@@ -257,11 +257,11 @@
 +    if (CGRectIsEmpty(s)) return 0;
 +    CGFloat standard = MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3);
 +    if (!_style) return standard;
-+    static const CGFloat multipliers[] = {1.20, 1.0, 1.30, 1.44};
++    static const CGFloat growth[] = {0.65, 0.0, 0.84, 1.0};
 +    // The action arc, shoulders and both thumb clusters use the same scale. The width limit
 +    // keeps a gap between them for camera swipes, and the height limit separates the shoulder row.
 +    CGFloat limit = MIN(MIN(s.size.height / 310.0, s.size.width / 665.0), 1.52);
-+    return MIN(standard * multipliers[_styleSize], limit);
++    return standard + (limit - standard) * growth[_styleSize];
 +}
  static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
  - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
@@ -520,3 +520,57 @@
              return (int)nout;
          }
          c += size;
+--- a/dm/host/hle_audio.c
++++ b/dm/host/hle_audio.c
+@@ -28,6 +28,10 @@
+     uint64_t pos;                      // Bytes already played of the current block
+     AudioUnit au;
+     int start_phase, reset_pending, mute;   // a reset during start replaces the unit after the call returns
++#if TARGET_OS_IPHONE
++    int speaker_clarity;
++    float bass[2];                     // low-shelf state owned by the audio callback
++#endif
+     int closed;                             // Close returned while a start was in flight: that start's worker frees the output
+     _Atomic int hold_device;               // callbacks output silence until the silent sink has joined
+     int backend;                       // BK_*: the running consumer. Start, Stop and the background suspend change it only under g_aos_lock and act on it rather than re-deriving it from state and g_suspended
+@@ -152,6 +156,19 @@
+ 
+ static _Atomic uint64_t g_render_calls;   // Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
+ uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
++#if TARGET_OS_IPHONE
++static void speaker_clarity(aout *a, int16_t *pcm, size_t samples) {
++    // A gentle low shelf in the 48 kHz client format. Reduce bass masking without boosting
++    // highs or changing the samples captured by DM_AUDIO_DUMP.
++    for (size_t i = 0; i < samples; i++) {
++        float *bass = &a->bass[i % 2];
++        float input = pcm[i];
++        *bass += 0.0322f * (input - *bass);
++        float output = input - 0.35f * *bass;
++        pcm[i] = (int16_t)(output > 32767.f ? 32767.f : output < -32768.f ? -32768.f : output);
++    }
++}
++#endif
+ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
+     (void)f; (void)ts; (void)bus; (void)frames;
+     aout *a = ctx;
+@@ -173,6 +190,9 @@
+     } else {
+         pull_device(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+         if (a->mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize);
++#if TARGET_OS_IPHONE
++        else if (a->speaker_clarity) speaker_clarity(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize / sizeof(int16_t));
++#endif
+     }
+     return noErr;
+ }
+@@ -413,6 +433,10 @@
+     if (rate && rate != RATE) die("AudioOut sample rate %d not supported (48 kHz only)", rate);
+     aout *a = calloc(1, sizeof *a);
+     const char *mute = getenv("DM_AUDIO_MUTE"); a->mute = mute && atoi(mute);
++#if TARGET_OS_IPHONE
++    const char *clarity = getenv("DM_AUDIO_CLARITY");
++    a->speaker_clarity = ch == 2 && clarity && !strcmp(clarity, "1");
++#endif
+     pthread_mutex_init(&a->m, NULL); a->event = ev; a->ch = ch;
+     atomic_init(&a->state, STATE_STOPPED); atomic_init(&a->vol, 0x3f800000u);
+     atomic_init(&a->q_head, 0); atomic_init(&a->q_tail, 0);
