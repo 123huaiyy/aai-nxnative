@@ -1,0 +1,60 @@
+# nxnative's iOS app for one game with placeholder module sections (ci/build_shell.py): no game files, keys or game-derived data.
+# The layout input holds only numbers and IDs (module sizes and offsets, the derived game.tsv with build IDs and display version).
+name: Rise iOS 26 cheats
+
+on:
+  push:
+    branches: [codex/rise-cheats-ios26-20261122]
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer   # nxnative's toolchain (README: Xcode 27.2), as its own CI names it
+
+jobs:
+  shell:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: seedds/nxnative
+          ref: f3ec8fc81e49744d178379a38ceae0fc1cba04d0
+          path: nxnative
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
+          command -v xcodegen || brew install xcodegen
+          python3 -m pip install fonttools
+      - name: Apply controls and cheat menu
+        run: |
+          git -C nxnative apply "$GITHUB_WORKSPACE/ci/patches/mhr-controls.patch"
+          git -C nxnative apply "$GITHUB_WORKSPACE/ci/rise-cheats/cheats.patch"
+      - name: Run the cheat engine regression test
+        run: make -C nxnative/dm/host/tests GAME=0100559011740000 cheats
+      - name: Build the app
+        run: python3 ci/ci/build_shell.py --repo nxnative --layout ci/rise-cheats/layout.json --output "$RUNNER_TEMP/shell"
+      - name: Archive
+        run: |
+          cd "$RUNNER_TEMP/shell/out"
+          ditto -c -k --sequesterRsrc --keepParent DmIOS.app "$GITHUB_WORKSPACE/DmIOS-shell.zip"
+          cp shell.json "$GITHUB_WORKSPACE/shell.json"
+          ls -la "$GITHUB_WORKSPACE"/DmIOS-shell.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-shell
+          path: |
+            DmIOS-shell.zip
+            shell.json
+          retention-days: 30
