@@ -1,0 +1,111 @@
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -172,6 +172,16 @@
+     [fm createDirectoryAtPath:mods withIntermediateDirectories:YES attributes:nil error:nil];
+     if (!getenv("DM_ROMFS_OVERLAY")) setenv("DM_ROMFS_OVERLAY", mods.fileSystemRepresentation, 0);
+     fprintf(stderr, "boot: RomFS mod overlay %s (Documents/mods; matching files replace game archives)\n", getenv("DM_ROMFS_OVERLAY"));
++    if (DM_GAME_PROGRAM_ID == 0x0100559011740000ULL) {
++        NSString *cheats = [doc stringByAppendingPathComponent:@"cheats"];
++        if (![fm fileExistsAtPath:cheats] && [fm createDirectoryAtPath:cheats withIntermediateDirectories:YES attributes:nil error:nil]) {
++            NSString *starter = [res stringByAppendingPathComponent:@"dm/cheats/D2FD97779381FB9A.txt"];
++            [fm copyItemAtPath:starter toPath:[cheats stringByAppendingPathComponent:starter.lastPathComponent] error:nil];
++        }
++        setenv("DM_CHEATS", cheats.fileSystemRepresentation, 1);
++        setenv("DM_CHEATS_ANY_BUILD", "0", 1);
++        setenv("DM_CHEATS_START_OFF", "1", 1);
++    }
+     front_hud_env();   // an env file's DM_METAL_HUD; nothing in this process makes a Metal device before startGame (front_ios.m), which applies the launcher's
+     // Game language (nn::oe::GetDesiredLanguage, hle_oe.c): the one the IPA was packed with (the NSP script's LANGUAGE / --language → DMLanguage in Info.plist), unless an env file sets DM_LANG
+     // (or the launcher, which replaces this default before the game starts)
+--- a/dm/host/hle_cheats.c
++++ b/dm/host/hle_cheats.c
+@@ -1837,7 +1837,8 @@
+     if (!g_dir[0]) return;
+     char p[1100];
+     flag_file(p, sizeof p, "off");
+-    atomic_store(&g_master, access(p, F_OK) != 0);
++    const char *start_off = getenv("DM_CHEATS_START_OFF");
++    atomic_store(&g_master, !(start_off && atoi(start_off)) && access(p, F_OK) != 0);
+ #if !TARGET_OS_IPHONE   // iOS keeps no safe mode (running_update)
+     flag_file(p, sizeof p, "running");
+     g_safe = access(p, F_OK) == 0;
+--- a/dm/ios/Sources/DmGameMenu.h
++++ b/dm/ios/Sources/DmGameMenu.h
+@@ -11,6 +11,19 @@
+ bool dm_pad_layout_offered(int layout);   // Tap needs handheld mode; Game style and Hidden need a profile opt-in
+ void dm_pad_layout_set(int layout);   // releases every touch first, and is saved for the next start
+ void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
++int dm_cheats_found(void);
++int dm_cheats_ncheats(void);
++const char *dm_cheats_build(void);
++const char *dm_cheats_dir_path(void);
++const char *dm_cheat_name_at(int i);
++const char *dm_cheat_why_at(int i);
++int dm_cheat_kind_at(int i);
++int dm_cheat_on_at(int i);
++void dm_cheat_toggle(int i);
++void dm_cheats_reload(void);
++int dm_cheats_master(void);
++void dm_cheats_master_set(int on);
++bool dm_ios_cheat_visible(int i);
+ bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
+ #ifdef __cplusplus
+ }
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -18,6 +18,10 @@
+ void dm_gamepad_active(void);
+ #import "DmLayout.h"
+ #import "DmGameMenu.h"
++
++bool dm_ios_cheat_visible(int i) {
++    return !(dm_cheat_flags_at(i) & (DM_CHEAT_PAIR_OFF | DM_CHEAT_SECTION_START | DM_CHEAT_SECTION_END));
++}
+ 
+ void front_ios_boot(void);
+ int front_ios_boot_ok(void);
+--- a/dm/ios/Sources/GameMenu.swift
++++ b/dm/ios/Sources/GameMenu.swift
+@@ -30,7 +30,42 @@
+         }
+     }
+     if !placed { items.insert(UIMenu(options: .displayInline, children: [layout]), at: 0) }
++    if let cheats = gameCheatsMenu() { items.append(cheats) }
+     return items
++}
++
++private func gameCheatsMenu() -> UIMenu? {
++    guard !String(cString: dm_cheats_dir_path()).isEmpty else { return nil }
++    let build = String(cString: dm_cheats_build())
++    let loaded = dm_cheats_found() != 0
++    let master = dm_cheats_master() != 0
++    let toggle = UIAction(title: "启用单机金手指", attributes: loaded ? [] : .disabled, state: master ? .on : .off) { _ in
++        dm_cheats_master_set(dm_cheats_master() == 0 ? 1 : 0)
++    }
++    let reload = UIAction(title: "重新读取作弊码", image: UIImage(systemName: "arrow.clockwise")) { _ in
++        dm_cheats_master_set(0)
++        dm_cheats_reload()
++    }
++    var rows: [UIMenuElement] = [toggle]
++    if !loaded {
++        let file = build.isEmpty ? "当前版本的代码文件" : "\(build).txt"
++        rows.append(UIAction(title: "请放入 Documents/cheats", subtitle: file, attributes: .disabled) { _ in })
++    }
++    for i in 0..<dm_cheats_ncheats() where dm_ios_cheat_visible(i) {
++        let name = String(cString: dm_cheat_name_at(i))
++        let title = name.hasSuffix(" - on") ? String(name.dropLast(5)) : name
++        if title.isEmpty { continue }
++        let kind = dm_cheat_kind_at(i)
++        let pending = String(cString: dm_cheat_why_at(i)).trimmingCharacters(in: .whitespacesAndNewlines)
++        let detail = pending.isEmpty ? (kind == 1 ? "主代码，随总开关运行" : nil) : pending
++        let attrs: UIMenuElement.Attributes = kind == 0 && master ? [] : .disabled
++        let selected = master && kind < 2 && (dm_cheat_on_at(i) != 0 || kind == 1)
++        rows.append(UIAction(title: title, subtitle: detail, attributes: attrs, state: selected ? .on : .off) { _ in
++            if dm_cheats_master() != 0 { dm_cheat_toggle(i) }
++        })
++    }
++    rows.append(reload)
++    return UIMenu(title: "金手指", subtitle: build.isEmpty ? nil : build, children: rows)
+ }
+ 
+ private func gameMenuRow(_ m: LauncherModel, _ s: Setting) -> UIMenuElement {
