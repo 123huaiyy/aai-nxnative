@@ -1,0 +1,528 @@
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -147,7 +147,6 @@
+     K_STYLE_DOSE_X = 245, K_STYLE_DOSE_Y = 135,     // the potion wheel (the D-pad, a game's four tool slots): centre from the left and the bottom
+     K_STYLE_DOSE_R = 36, K_STYLE_DOSE_ART = 29,     // the rim its slots sit on, a flask's size
+     K_STYLE_DOSE_CAP = 10.5,                         // a potion's name: the wheel's four captions, smaller than a key's binding
+-    K_STYLE_DOSE_GRAB = 1.62,                       // how near the wheel's centre a touch-down takes it (times the rim's radius)
+     K_STYLE_PILL_W = 76, K_STYLE_PILL_H = 40,       // − / +: the glyph over its sign, a taller target than the pad layouts' pair
+     K_STYLE_PILL_DX = 64, K_STYLE_PILL_Y = 30,      // and that much further out, clear of the menu button between them
+     K_STYLE_PILL_ART = 26,                          // the glyph on the pill
+@@ -160,11 +159,24 @@
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
+ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+ static NSString *const k_size_key = @"DmStylePadSize";
++static NSString *const k_custom_key = @"DmStylePadPlacementV1";
++enum { B_MOVE_STICK = B_N };
++static const int k_style_editable[] = {
++    B_MOVE_STICK, B_A, B_B, B_X, B_Y, B_ZL, B_ZR, B_L, B_R,
++    B_MINUS, B_PLUS, B_UP, B_RIGHT, B_DOWN, B_LEFT,
++};
++
++static CGFloat clamp(CGFloat value, CGFloat low, CGFloat high) {
++    return MAX(low, MIN(value, high));
++}
+ int dm_opmode(void);   // hle_oe.c: 0 = handheld
+ 
+-@interface DmGamepad : UIView
++@interface DmGamepad : UIView <UIGestureRecognizerDelegate>
+ - (void)arrange:(DmLayout)layout;
+ - (BOOL)menuTakes:(CGPoint)p;
++- (void)startPadEditor;
++- (void)closePadEditor:(BOOL)save;
++- (CGPoint)styleDropDefault:(int)b;
+ @end
+ // The menu button: a UIButton whose menu is the in-game menu (UIKit draws it and takes the touches while it is open). Its hit circle is larger than the drawn one, and a key nearer
+ // to the touch wins (− / + sit beside it), so it asks the pad
+@@ -193,6 +205,13 @@
+     BOOL _stickShown;                              // the left stick was held at the last refresh
+     BOOL _full, _tap, _style, _hidden;             // the 3D / Tap / Game style / Hidden layout is current
+     int _styleSize;
++    NSMutableDictionary<NSString *, NSDictionary *> *_customPad;
++    UIView *_padEditor;
++    UIStackView *_editorBar;
++    UIButton *_editorSmaller, *_editorLarger;
++    CAShapeLayer *_editorSelection;
++    int _editedControl, _draggedControl;
++    CGPoint _dragOffset;
+     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
+     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
+     DmLayout _layout;
+@@ -342,6 +361,8 @@
+         _full = l == 1; _tap = l == 2; _style = l == 3; _hidden = l == 4;
+         NSInteger storedSize = [NSUserDefaults.standardUserDefaults integerForKey:k_size_key];
+         _styleSize = storedSize >= 0 && storedSize <= 3 ? (int)storedSize : 0;
++        _customPad = [[NSUserDefaults.standardUserDefaults dictionaryForKey:k_custom_key] mutableCopy]
++            ?: [NSMutableDictionary dictionary];
+         [self applyLayout];
+         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+         [nc addObserver:self selector:@selector(padsChanged:) name:GCControllerDidConnectNotification object:nil];
+@@ -381,6 +402,7 @@
+ }
+ - (void)setPadLayout:(int)l {   // the in-game menu's pick: release every touch first (no key stays held), save, lay out again
+     if (l == 2 && dm_opmode() != 0) l = 0;
++    if (_padEditor) [self closePadEditor:NO];
+     [self reset];
+     _full = l == 1; _tap = l == 2; _style = l == 3; _hidden = l == 4;
+     [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
+@@ -416,6 +438,34 @@
+     CGFloat limit = MIN(MIN(s.size.height / 310.0, s.size.width / 665.0), 1.52);
+     return standard + (limit - standard) * growth[_styleSize];
+ }
++static NSString *placementKey(int control) {
++    return [NSString stringWithFormat:@"%d", control];
++}
++
++- (CGFloat)styleScale:(int)control {
++    NSNumber *scale = _customPad[placementKey(control)][@"scale"];
++    return [scale isKindOfClass:NSNumber.class] && isfinite(scale.doubleValue)
++        ? clamp(scale.doubleValue, 0.65, 1.6) : 1;
++}
++
++- (CGPoint)styleCenter:(int)control fallback:(CGPoint)fallback radius:(CGFloat)radius {
++    NSDictionary *placement = _customPad[placementKey(control)];
++    CGRect safe = self.safe;
++    if (!placement || CGRectIsEmpty(safe)) return fallback;
++    NSNumber *x = placement[@"x"], *y = placement[@"y"];
++    CGPoint center = fallback;
++    if ([x isKindOfClass:NSNumber.class] && [y isKindOfClass:NSNumber.class] &&
++        isfinite(x.doubleValue) && isfinite(y.doubleValue)) {
++        center = CGPointMake(CGRectGetMinX(safe) + clamp(x.doubleValue, 0, 1) * safe.size.width,
++                             CGRectGetMinY(safe) + clamp(y.doubleValue, 0, 1) * safe.size.height);
++    }
++    // The full glyph and caption stay inside the safe area after a rotation or resize.
++    CGFloat margin = radius * [self styleScale:control] * self.u;
++    CGFloat dx = MIN(margin, safe.size.width / 2), dy = MIN(margin, safe.size.height / 2);
++    return CGPointMake(clamp(center.x, CGRectGetMinX(safe) + dx, CGRectGetMaxX(safe) - dx),
++                       clamp(center.y, CGRectGetMinY(safe) + dy, CGRectGetMaxY(safe) - dy));
++}
++
+ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
+ - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
+ - (CGPoint)portraitThumbCenter:(BOOL)right {
+@@ -432,15 +482,21 @@
+ - (CGFloat)faceHitR { return MAX(self.faceR * 1.25, _layout.separated ? 22 : 0); }
+ - (CGPoint)facePos:(int)b {
+     if (_style) {   // on an arc over the seal: A nearest the seal's left, then X, Y, B going round toward the screen edge
+-        CGPoint s = [self dropCenter:B_ZR]; CGFloat r = K_STYLE_ARC_R * self.u;
++        CGPoint s = [self styleDropDefault:B_ZR]; CGFloat r = K_STYLE_ARC_R * self.u;
+         int i = b == B_A ? 0 : b == B_X ? 1 : b == B_Y ? 2 : 3;
+         double a = -M_PI_2 + (i - 1.5) * K_STYLE_ARC_STEP;
+-        return CGPointMake(s.x + r * cos(a), s.y + r * sin(a));
++        CGPoint center = CGPointMake(s.x + r * cos(a), s.y + r * sin(a));
++        return [self styleCenter:b fallback:center radius:K_STYLE_FACE_ART / 2 + 13];
+     }
+     CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
+ - (CGPoint)stickHome {
+-    if (_style) { CGRect s = self.corner; return CGPointMake(CGRectGetMinX(s) + K_STYLE_MOVE_X * self.u, CGRectGetMaxY(s) - K_STYLE_MOVE_Y * self.u); }
++    if (_style) {
++        CGRect s = self.corner;
++        CGPoint center = CGPointMake(CGRectGetMinX(s) + K_STYLE_MOVE_X * self.u,
++                                     CGRectGetMaxY(s) - K_STYLE_MOVE_Y * self.u);
++        return [self styleCenter:B_MOVE_STICK fallback:center radius:K_STYLE_MOVE_R];
++    }
+     if (self.portraitControls) {
+         CGPoint p = [self portraitThumbCenter:NO];
+         if (_full) p.x -= self.dpadR + 6 * self.u;
+@@ -450,7 +506,10 @@
+     return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u);
+ }
+ - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
+-- (CGFloat)stickR:(int)i { if (i) return K_RSTICK_R * self.u; return (_style ? K_STYLE_MOVE_R : K_STICK_R) * self.u; }
++- (CGFloat)stickR:(int)i {
++    if (i) return K_RSTICK_R * self.u;
++    return (_style ? K_STYLE_MOVE_R * [self styleScale:B_MOVE_STICK] : K_STICK_R) * self.u;
++}
+ - (BOOL)inRightArea:(CGPoint)p { CGRect b = _layout.controls; return p.x >= CGRectGetMaxX(b) - b.size.width * (_style ? 0.5 : K_RSWIPE); }
+ - (CGPoint)dpadCenter {
+     if (_style) { CGRect s = self.corner; return CGPointMake(CGRectGetMinX(s) + K_STYLE_DOSE_X * self.u, CGRectGetMaxY(s) - K_STYLE_DOSE_Y * self.u); }   // the potion wheel: up the left side from the wand ring
+@@ -465,30 +524,50 @@
+ - (CGFloat)dpadR { return (_style ? K_STYLE_DOSE_R : K_DPAD_R) * self.u; }
+ static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
+ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
++- (CGPoint)styleDropDefault:(int)b {
++    CGRect s = self.corner; CGFloat u = self.u;
++    if (b == B_ZR) return CGPointMake(CGRectGetMaxX(s) - K_STYLE_CAST_X * u, CGRectGetMaxY(s) - K_STYLE_CAST_Y * u);
++    if (b == B_ZL) return CGPointMake(CGRectGetMaxX(s) - (K_STYLE_CAST_X + K_STYLE_GUARD_DX) * u, CGRectGetMaxY(s) - (K_STYLE_CAST_Y + K_STYLE_GUARD_DY) * u);
++    return side(s, b == B_R, K_STYLE_SIDE_X * u, CGRectGetMinY(s) + K_STYLE_SIDE_Y * u);
++}
+ - (CGPoint)dropCenter:(int)b {
+-    if (_style) {
+-        CGRect s = self.corner; CGFloat u = self.u;
+-        if (b == B_ZR) return CGPointMake(CGRectGetMaxX(s) - K_STYLE_CAST_X * u, CGRectGetMaxY(s) - K_STYLE_CAST_Y * u);
+-        if (b == B_ZL) return CGPointMake(CGRectGetMaxX(s) - (K_STYLE_CAST_X + K_STYLE_GUARD_DX) * u, CGRectGetMaxY(s) - (K_STYLE_CAST_Y + K_STYLE_GUARD_DY) * u);
+-        return side(s, b == B_R, K_STYLE_SIDE_X * u, CGRectGetMinY(s) + K_STYLE_SIDE_Y * u);   // L / R: high on each side
+-    }
++    if (_style) return [self styleCenter:b fallback:[self styleDropDefault:b] radius:[self dropArtBase:b] / 2 + 13];
+     CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
+     CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_ZR || b == B_R, MAX((z ? K_ZL_X : K_L_X) * u, edge), CGRectGetMinY(s) + MAX((z ? K_ZL_Y : K_L_Y) * u, edge)); }
+-- (CGFloat)dropR:(int)b { if (_style) return (b == B_ZR ? K_STYLE_CAST_R : b == B_ZL ? K_STYLE_GUARD_R : K_STYLE_SIDE_R) * self.u; return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
+-- (CGFloat)dropArt:(int)b { return (b == B_ZR ? K_STYLE_CAST_ART : b == B_ZL ? K_STYLE_GUARD_ART : K_STYLE_SIDE_ART) * self.u; }   // the glyph drawn there (the target stays dropR:)
++- (CGFloat)dropR:(int)b { if (_style) return (b == B_ZR ? K_STYLE_CAST_R : b == B_ZL ? K_STYLE_GUARD_R : K_STYLE_SIDE_R) * self.u * [self styleScale:b]; return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
++- (CGFloat)dropArtBase:(int)b { return b == B_ZR ? K_STYLE_CAST_ART : b == B_ZL ? K_STYLE_GUARD_ART : K_STYLE_SIDE_ART; }
+ - (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_RS, MAX(K_CLICK_X * u, edge), CGRectGetMinY(s) + MAX(K_ZL_Y * u, edge)); }
+ - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u;
+     CGFloat w = (_style ? K_STYLE_PILL_W : K_PILL_W) * u, h = (_style ? K_STYLE_PILL_H : K_PILL_H) * u;
+     CGFloat dx = (_style ? K_STYLE_PILL_DX : K_PILL_DX) * u, y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * u;
+     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? dx : -dx), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0));   // − on the left, + on the right
+-    return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
++    if (_style) {
++        c = [self styleCenter:b fallback:c radius:K_STYLE_PILL_ART / 2 + 16];
++        CGFloat factor = [self styleScale:b];
++        w *= factor; h *= factor;
++    }
++    return CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
++}
++- (CGPoint)shortcutCenter:(int)b {
++    CGPoint c = self.dpadCenter;
++    CGFloat r = self.dpadR;
++    if (b == B_UP) c.y -= r;
++    else if (b == B_DOWN) c.y += r;
++    else if (b == B_LEFT) c.x -= r;
++    else c.x += r;
++    return [self styleCenter:b fallback:c radius:K_STYLE_DOSE_ART / 2 + 13];
++}
+ - (CGPoint)menuCenter { CGRect s = self.safe; CGFloat y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * self.u; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0)); }
+ 
+ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
+ - (CGFloat)buttonDistance:(int)b point:(CGPoint)p {
+     CGFloat u = self.u;
++    if (_style && b <= B_Y)
++        return dist(p, [self facePos:b]) / MAX(K_STYLE_FACE_R * u * [self styleScale:b] * 1.3, 22);
++    if (_style && b >= B_LEFT)
++        return dist(p, [self shortcutCenter:b]) / MAX(K_STYLE_DOSE_ART * 0.72 * u * [self styleScale:b], 22);
+     if (isDrop(b)) return dist(p, [self dropCenter:b]) / MAX([self dropR:b] * 1.35, (_layout.separated || _style) ? 22 : 0);
+     if (isClick(b)) return dist(p, [self clickCenter:b]) / MAX(K_CLICK_R * u * 1.35, _layout.separated ? 22 : 0);
+     CGRect r = CGRectInset([self pillRect:b], -8 * u, -8 * u);
+@@ -498,8 +577,9 @@
+ }
+ - (int)btnAt:(CGPoint)p {   // Locked at touch-down; nearest normalized target wins overlapping separated-layout hits.
+     int best = -1; CGFloat distance = 1;
+-    if (_style) for (int b = B_A; b <= B_Y; b++) {   // the Game style layout's action keys are keys of their own, with no diamond to slide on
+-        CGFloat d = dist(p, [self facePos:b]) / MAX(K_STYLE_FACE_R * self.u * 1.3, 22);
++    if (_style) for (int b = B_A; b < B_N; b++) {
++        if (b > B_Y && b < B_LEFT) continue;
++        CGFloat d = [self buttonDistance:b point:p];
+         if (d <= 1 && (best < 0 || d < distance)) { best = b; distance = d; }
+     }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+@@ -517,7 +597,7 @@
+     CGFloat d = [self menuDistance:p]; if (d > 1) return NO;
+     if (_tap || _padOff || _hidden || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return YES;
+     int hit = [self btnAt:p];
+-    return hit < 0 || d < [self buttonDistance:hit point:p];
++    return hit < 0 || (_style && d <= 0.55) || d < [self buttonDistance:hit point:p];
+ }
+ - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
+     uint64_t m = 0; CGFloat r = self.faceHitR;
+@@ -528,11 +608,6 @@
+     CGPoint c = self.dpadCenter; CGFloat dx = p.x - c.x, dy = p.y - c.y;
+     if (hypot(dx, dy) < self.dpadR * 0.25) return 0;
+     double a = atan2(-dy, dx) * 180 / M_PI; uint64_t m = 0;
+-    if (_style) {   // the potion wheel has four slots, so a quarter of it each and never two at once (a tool slot is a single)
+-        if (a >= 45 && a < 135) return 1ull << B_UP;
+-        if (a < -45 && a >= -135) return 1ull << B_DOWN;
+-        return 1ull << (a >= 135 || a < -135 ? B_LEFT : B_RIGHT);
+-    }
+     if (a > -67.5 && a < 67.5) m |= 1ull << B_RIGHT;
+     if (a > 22.5 && a < 157.5) m |= 1ull << B_UP;
+     if (a > 112.5 || a < -112.5) m |= 1ull << B_LEFT;
+@@ -600,7 +675,7 @@
+     if (_tap) return NO;
+     if ([self btnAt:p] >= 0) return YES;
+     if (_style) return dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) <= 1
+-        || dist(p, self.dpadCenter) / MAX(self.dpadR * K_STYLE_DOSE_GRAB, _layout.separated ? 22 : 0) <= 1 || (!_stick[1] && [self inRightArea:p]);
++        || (!_stick[1] && [self inRightArea:p]);
+     if (dist(p, self.faceCenter) / (self.faceGap + MAX(self.faceR * 1.6, self.faceHitR)) <= 1) return YES;
+     if (_full && dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, _layout.separated ? 22 : 0) < 1) return YES;
+     if (!_stick[0] && dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0) < 1) return YES;
+@@ -622,7 +697,7 @@
+         // diamond, D-pad, left stick: take the one with the smallest distance / grab radius, if it is <= 1
+         CGFloat best = 1; int kind = C_NONE, idx = 0;
+         if (!_style) { CGFloat f = dist(p, self.faceCenter) / (self.faceGap + MAX(self.faceR * 1.6, self.faceHitR)); if (f <= best) { best = f; kind = C_FACE; } }
+-        if (_full || _style) { CGFloat d = dist(p, self.dpadCenter) / MAX(self.dpadR * (_style ? K_STYLE_DOSE_GRAB : K_DPAD_GRAB), _layout.separated ? 22 : 0); if (d < best) { best = d; kind = C_DPAD; } }   // the wheel is the D-pad here
++        if (_full) { CGFloat d = dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, _layout.separated ? 22 : 0); if (d < best) { best = d; kind = C_DPAD; } }
+         if (!_stick[0]) { CGFloat s = dist(p, self.stickHome) / MAX([self stickR:0] * K_STICK_GRAB, _layout.separated ? 22 : 0); if (s < best) { best = s; kind = C_STICK; } }
+         if (kind == C_NONE && (_full || _style) && !_stick[1] && [self inRightArea:p]) { kind = C_STICK; idx = 1; _rCentre = p; }   // the right stick: centred where the touch lands
+         if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
+@@ -711,17 +786,19 @@
+     _controls.frame = self.layer.bounds;
+     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
+         if (_style) {   // the glyph, and under it the button that does it (on a Switch pad A dodges and B jumps)
+-            placeArt(_art[b], c, K_STYLE_FACE_ART * u);
+-            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * u, 9), K_STYLE_FACE_ART * u / 2 + K_STYLE_CAP_GAP * u);
++            CGFloat keyUnit = u * [self styleScale:b];
++            placeArt(_art[b], c, K_STYLE_FACE_ART * keyUnit);
++            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * keyUnit, 9), (K_STYLE_FACE_ART / 2 + K_STYLE_CAP_GAP) * keyUnit);
+         } else {
+             setPath(_key[b], circlePath(c, self.faceR));
+             placeLabel(_label[b], c, 20 * u);
+         } }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+         if (_style && isDrop(b)) {   // the seal, the shield and the shoulders: a glyph, its binding under it
+-            CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
++            CGPoint c = [self dropCenter:b];
++            CGFloat keyUnit = u * [self styleScale:b], art = [self dropArtBase:b] * keyUnit;
+             placeArt(_art[b], c, art);
+-            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * u, 9), art / 2 + K_STYLE_CAP_GAP * u);
++            placeLabelAt(_label[b], c, MAX(K_STYLE_CAP * keyUnit, 9), art / 2 + K_STYLE_CAP_GAP * keyUnit);
+         } else if (isDrop(b)) {
+             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
+             setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
+@@ -731,8 +808,9 @@
+             CGRect rc = [self pillRect:b];
+             if (_style) {   // map / pause: the glyph over the sign it stands for, both inside the pill's target
+                 CGFloat my = CGRectGetMidY(rc);
+-                placeArt(_art[b], CGPointMake(CGRectGetMidX(rc), my - 0.18 * rc.size.height), K_STYLE_PILL_ART * u);
+-                placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), my + 0.26 * rc.size.height), 11 * u);
++                CGFloat keyUnit = u * [self styleScale:b];
++                placeArt(_art[b], CGPointMake(CGRectGetMidX(rc), my - 0.18 * rc.size.height), K_STYLE_PILL_ART * keyUnit);
++                placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), my + 0.26 * rc.size.height), MAX(11 * keyUnit, 9));
+             } else {
+                 setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL));
+                 placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+@@ -742,12 +820,11 @@
+         static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
+         for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+     } else {   // four directional shortcuts with their controller bindings
+-        static const int slot[4] = {B_UP, B_RIGHT, B_DOWN, B_LEFT};   // from the top, round
+-        CGPoint c = self.dpadCenter; CGFloat r = self.dpadR, art = K_STYLE_DOSE_ART * u;
+-        for (int i = 0; i < 4; i++) { double a = -M_PI_2 + i * M_PI_2;
+-            CGPoint here = CGPointMake(c.x + r * cos(a), c.y + r * sin(a));
+-            placeArt(_art[slot[i]], here, art);
+-            placeLabelAt(_label[slot[i]], here, MAX(K_STYLE_DOSE_CAP * u, 9), (K_STYLE_DOSE_ART / 2 + K_STYLE_CAP_GAP) * u);
++        for (int b = B_LEFT; b < B_N; b++) {
++            CGPoint center = [self shortcutCenter:b];
++            CGFloat keyUnit = u * [self styleScale:b];
++            placeArt(_art[b], center, K_STYLE_DOSE_ART * keyUnit);
++            placeLabelAt(_label[b], center, MAX(K_STYLE_DOSE_CAP * keyUnit, 9), (K_STYLE_DOSE_ART / 2 + K_STYLE_CAP_GAP) * keyUnit);
+         }
+     }
+     CGFloat mr = K_MENU_R * u; CGPoint mc = self.menuCenter;
+@@ -776,15 +853,183 @@
+         setPath(_ring, circlePath(self.stickHome, stickRadius));
+     }
+     _ring.lineWidth = _style ? MAX(1.0, 1.2 * u) : 1.5;   // the wand ring: thinner than a pad's ring, because it frames a thumb and is not a key
+-    CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
++    CGFloat k = (_style ? K_STYLE_KNOB_R * [self styleScale:B_MOVE_STICK] : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     if (_style && _knobArt) { _knob.path = nil; _knob.shadowPath = nil; }
+     else setPath(_knob, circlePath(CGPointMake(k, k), k));
+     _knobArt.frame = _knob.bounds;
+     CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+     in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
++    if (_padEditor) [self layoutPadEditor];
+     [CATransaction commit];
+     [self refresh];
+ }
++// ---- The touch layout editor ----
++- (CGPoint)editorCenter:(int)control {
++    if (control == B_MOVE_STICK) return self.stickHome;
++    if (control >= B_LEFT) return [self shortcutCenter:control];
++    if (control <= B_Y) return [self facePos:control];
++    if (isDrop(control)) return [self dropCenter:control];
++    CGRect pill = [self pillRect:control];
++    return CGPointMake(CGRectGetMidX(pill), CGRectGetMidY(pill));
++}
++
++- (CGRect)editorTarget:(int)control {
++    if (control == B_MOVE_STICK) {
++        CGFloat radius = [self stickR:0];
++        CGPoint p = self.stickHome;
++        return CGRectMake(p.x - radius, p.y - radius, 2 * radius, 2 * radius);
++    }
++    CGRect art = _art[control].frame, caption = _label[control].frame;
++    return CGRectUnion(art, caption);
++}
++
++- (int)editorControlAt:(CGPoint)p {
++    int best = -1;
++    CGFloat nearest = CGFLOAT_MAX;
++    for (int i = 0; i < (int)(sizeof k_style_editable / sizeof *k_style_editable); i++) {
++        int control = k_style_editable[i];
++        if (!CGRectContainsPoint(CGRectInset([self editorTarget:control], -10, -10), p)) continue;
++        CGFloat d = dist(p, [self editorCenter:control]);
++        if (d < nearest) { nearest = d; best = control; }
++    }
++    return best;
++}
++
++- (void)layoutPadEditor {
++    _padEditor.frame = self.bounds;
++    CGRect safe = self.safe;
++    if (CGRectIsEmpty(safe)) return;
++    CGSize barSize = [_editorBar systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
++    _editorBar.frame = CGRectMake(CGRectGetMidX(safe) - barSize.width / 2,
++                                 CGRectGetMaxY(safe) - barSize.height - 8, barSize.width, barSize.height);
++    _editorSelection.hidden = _editedControl < 0;
++    _editorSmaller.enabled = _editedControl >= 0;
++    _editorLarger.enabled = _editedControl >= 0;
++    if (_editedControl >= 0) {
++        CGRect target = CGRectInset([self editorTarget:_editedControl], -5, -5);
++        _editorSelection.path = [UIBezierPath bezierPathWithRoundedRect:target cornerRadius:8].CGPath;
++    }
++}
++
++- (UIButton *)editorButton:(NSString *)title action:(SEL)action {
++    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++    UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
++    config.title = title;
++    config.baseForegroundColor = UIColor.whiteColor;
++    config.contentInsets = NSDirectionalEdgeInsetsMake(8, 9, 8, 9);
++    button.configuration = config;
++    [button.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
++    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
++    return button;
++}
++
++- (void)startPadEditor {
++    if (!_style || _padEditor) return;
++    [self reset];
++    _editedControl = _draggedControl = -1;
++    _padEditor = [[UIView alloc] initWithFrame:self.bounds];
++    _padEditor.accessibilityViewIsModal = YES;
++
++    _editorSelection = [CAShapeLayer layer];
++    _editorSelection.fillColor = UIColor.clearColor.CGColor;
++    _editorSelection.strokeColor = UIColor.whiteColor.CGColor;
++    _editorSelection.lineWidth = 1.5;
++    _editorSelection.lineDashPattern = @[@5, @4];
++    [_padEditor.layer addSublayer:_editorSelection];
++
++    _editorSmaller = [self editorButton:@"\u7f29\u5c0f" action:@selector(editorShrink)];
++    _editorLarger = [self editorButton:@"\u653e\u5927" action:@selector(editorGrow)];
++    NSArray *buttons = @[
++        [self editorButton:@"\u53d6\u6d88" action:@selector(editorCancel)],
++        [self editorButton:@"\u6062\u590d\u9ed8\u8ba4" action:@selector(editorReset)],
++        _editorSmaller, _editorLarger,
++        [self editorButton:@"\u4fdd\u5b58" action:@selector(editorSave)]
++    ];
++    _editorBar = [[UIStackView alloc] initWithArrangedSubviews:buttons];
++    _editorBar.axis = UILayoutConstraintAxisHorizontal;
++    _editorBar.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
++    _editorBar.layer.cornerRadius = 12;
++    [_padEditor addSubview:_editorBar];
++
++    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(editorPan:)];
++    pan.maximumNumberOfTouches = 1;
++    pan.delegate = self;
++    [_padEditor addGestureRecognizer:pan];
++    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editorTap:)];
++    tap.delegate = self;
++    [tap requireGestureRecognizerToFail:pan];
++    [_padEditor addGestureRecognizer:tap];
++    [self addSubview:_padEditor];
++    _controls.hidden = NO;
++    _menu.hidden = YES;
++    [self setNeedsLayout];
++}
++
++- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
++    return ![touch.view isDescendantOfView:_editorBar];
++}
++
++- (void)editorTap:(UITapGestureRecognizer *)tap {
++    _editedControl = [self editorControlAt:[tap locationInView:self]];
++    [self setNeedsLayout];
++}
++
++- (void)editorPan:(UIPanGestureRecognizer *)pan {
++    CGPoint p = [pan locationInView:self];
++    if (pan.state == UIGestureRecognizerStateBegan) {
++        CGPoint delta = [pan translationInView:self];
++        CGPoint start = CGPointMake(p.x - delta.x, p.y - delta.y);
++        _editedControl = _draggedControl = [self editorControlAt:start];
++        if (_draggedControl >= 0) {
++            CGPoint center = [self editorCenter:_draggedControl];
++            _dragOffset = CGPointMake(center.x - start.x, center.y - start.y);
++        }
++        [self setNeedsLayout];
++    }
++    if (_draggedControl < 0) return;
++    if (pan.state == UIGestureRecognizerStateCancelled || pan.state == UIGestureRecognizerStateFailed) {
++        _draggedControl = -1;
++        return;
++    }
++    CGRect safe = self.safe;
++    if (!CGRectIsEmpty(safe)) {
++        CGFloat x = clamp((p.x + _dragOffset.x - CGRectGetMinX(safe)) / safe.size.width, 0, 1);
++        CGFloat y = clamp((p.y + _dragOffset.y - CGRectGetMinY(safe)) / safe.size.height, 0, 1);
++        _customPad[placementKey(_draggedControl)] = @{@"x": @(x), @"y": @(y), @"scale": @([self styleScale:_draggedControl])};
++        [self setNeedsLayout];
++    }
++    if (pan.state == UIGestureRecognizerStateEnded) _draggedControl = -1;
++}
++
++- (void)resizeEditedControl:(CGFloat)change {
++    if (_editedControl < 0) return;
++    NSString *key = placementKey(_editedControl);
++    NSMutableDictionary *placement = [_customPad[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++    placement[@"scale"] = @(clamp([self styleScale:_editedControl] + change, 0.65, 1.6));
++    _customPad[key] = placement;
++    [self setNeedsLayout];
++}
++
++- (void)editorShrink { [self resizeEditedControl:-0.1]; }
++- (void)editorGrow { [self resizeEditedControl:0.1]; }
++- (void)editorReset { [_customPad removeAllObjects]; _editedControl = -1; [self setNeedsLayout]; }
++- (void)editorCancel { [self closePadEditor:NO]; }
++- (void)editorSave { [self closePadEditor:YES]; }
++
++- (void)closePadEditor:(BOOL)save {
++    if (save) [NSUserDefaults.standardUserDefaults setObject:_customPad forKey:k_custom_key];
++    else _customPad = [[NSUserDefaults.standardUserDefaults dictionaryForKey:k_custom_key] mutableCopy]
++        ?: [NSMutableDictionary dictionary];
++    [_padEditor removeFromSuperview];
++    _padEditor = nil;
++    _editorBar = nil;
++    _editorSelection = nil;
++    _editorSmaller = _editorLarger = nil;
++    _menu.hidden = NO;
++    _controls.hidden = _padOff || _hidden;
++    [self setNeedsLayout];
++}
++
+ - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
+ - (void)refresh {   // pressed state → fill or a lit glyph, sticks → knob position
+     uint64_t all = _faceBits | _dpadBits | _btnBits;
+@@ -896,7 +1141,9 @@
+     GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
+     if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
+     BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
+-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any || self->_hidden; [self reset]; });   // the touch gamepad hides while any controller is in use
++    dispatch_async(dispatch_get_main_queue(), ^{
++        self->_padOff = any; self->_controls.hidden = (any && !self->_padEditor) || self->_hidden; [self reset];
++    });   // the touch gamepad hides while any controller is in use
+ }
+ @end
+ 
+@@ -1000,6 +1247,7 @@
+ void dm_pad_layout_set(int layout) { [g_view setPadLayout:layout]; }
+ int dm_pad_size(void) { return [g_view padSize]; }
+ void dm_pad_size_set(int size) { [g_view setPadSize:size]; }
++void dm_pad_edit_start(void) { [g_view startPadEditor]; }
+ void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h
+ void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
+     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
+--- a/dm/ios/Sources/DmGameMenu.h
++++ b/dm/ios/Sources/DmGameMenu.h
+@@ -12,6 +12,7 @@
+ void dm_pad_layout_set(int layout);   // releases every touch first, and is saved for the next start
+ int dm_pad_size(void);   // 0 = adaptive, 1 = standard, 2 = large, 3 = extra large
+ void dm_pad_size_set(int size);
++void dm_pad_edit_start(void);
+ void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
+ bool dm_setting_live(const char *env, const char *value);   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
+ #ifdef __cplusplus
+--- a/dm/ios/Sources/GameMenu.swift
++++ b/dm/ios/Sources/GameMenu.swift
+@@ -21,6 +21,7 @@
+     let layout = UIMenu(title: "Controller layout", options: .singleSelection, children: layouts)   // a choice's value shows in its submenu: a subtitle would make each row two lines
+     var controlItems: [UIMenuElement] = [layout]
+     if dm_pad_layout() == 3 {
++        controlItems.append(UIAction(title: "自定义按键", image: UIImage(systemName: "move.3d")) { _ in dm_pad_edit_start() })
+         let sizes = ["自适应", "标准", "大", "特大"]
+         let selected = Int(dm_pad_size())
+         let choices = sizes.enumerated().map { index, name in

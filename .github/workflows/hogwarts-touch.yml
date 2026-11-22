@@ -43,6 +43,7 @@ jobs:
             git -C nxnative apply "$GITHUB_WORKSPACE/ci/patches/$p"
           done
           git -C nxnative apply "$GITHUB_WORKSPACE/ci/hogwarts-touch/controls.patch"
+          git -C nxnative apply "$GITHUB_WORKSPACE/ci/hogwarts-touch/editor.patch"
       - name: Build the app
         run: python3 ci/ci/build_shell.py --repo nxnative --layout ci/hogwarts-touch/layout.json --output "$RUNNER_TEMP/shell"
       - name: Archive
