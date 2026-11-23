@@ -1,0 +1,450 @@
+--- a/runtime/touch_hunter.m
++++ b/runtime/touch_hunter.m
+@@ -16,7 +16,91 @@
+ #define BIT(x) (1ull << (x))
+ typedef struct { CGFloat x,y,r; uint64_t mask; int icon; __unsafe_unretained NSString *name; } Key;
+ 
+-@interface HunterPad : UIView
++// UIKit-only gear visibility. Gamepad touch handling remains independent.
++@interface DmTransientGear : NSObject
++@property(nonatomic, readonly, getter=isAutomatic) BOOL automatic;
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button;
++- (void)setAutomatic:(BOOL)automatic;
++- (void)setEditing:(BOOL)editing;
++@end
++
++@implementation DmTransientGear {
++    __weak UIButton *_button;
++    UITapGestureRecognizer *_tap;
++    NSTimer *_hideTimer;
++    BOOL _automatic, _revealed, _editing;
++}
++static NSString *const k_transientGearKey = @"DmTransientGearV1";
++
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button {
++    if ((self = [super init])) {
++        _button = button;
++        _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(screenTapped:)];
++        _tap.cancelsTouchesInView = NO;
++        _tap.delaysTouchesBegan = NO;
++        _tap.delaysTouchesEnded = NO;
++        _tap.requiresExclusiveTouchType = NO;
++        [pad addGestureRecognizer:_tap];
++        _automatic = [NSUserDefaults.standardUserDefaults boolForKey:k_transientGearKey];
++        [self updateVisibility];
++    }
++    return self;
++}
++- (BOOL)isAutomatic { return _automatic; }
++- (void)updateVisibility {
++    _tap.enabled = _automatic && !_editing;
++    _button.hidden = _editing || (_automatic && !_revealed);
++}
++- (void)showTemporarily {
++    if (!_automatic || _editing) return;
++    [_hideTimer invalidate];
++    _revealed = YES;
++    [self updateVisibility];
++    __weak DmTransientGear *weakGear = self;
++    _hideTimer = [NSTimer timerWithTimeInterval:3.0 repeats:NO block:^(NSTimer *timer) {
++        DmTransientGear *gear = weakGear;
++        if (!gear || timer != gear->_hideTimer) return;
++        gear->_hideTimer = nil;
++        gear->_revealed = NO;
++        [gear updateVisibility];
++    }];
++    [NSRunLoop.mainRunLoop addTimer:_hideTimer forMode:NSRunLoopCommonModes];
++}
++- (void)screenTapped:(UITapGestureRecognizer *)recognizer {
++    if (recognizer.state == UIGestureRecognizerStateRecognized) [self showTemporarily];
++}
++- (void)setAutomatic:(BOOL)automatic {
++    _automatic = automatic;
++    [NSUserDefaults.standardUserDefaults setBool:automatic forKey:k_transientGearKey];
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    if (automatic && !_editing) [self showTemporarily];
++    else [self updateVisibility];
++}
++- (void)setEditing:(BOOL)editing {
++    _editing = editing;
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    [self updateVisibility];
++    if (!editing) [self showTemporarily];
++}
++- (void)dealloc { [_hideTimer invalidate]; }
++@end
++
++enum { HunterStick = 18, HunterControlCount };
++static NSString *const HunterLayoutKey = @"HunterPadLayoutV1";
++
++static CGFloat hunterClamp(CGFloat x, CGFloat lower, CGFloat upper) {
++    return MIN(MAX(x,lower),upper);
++}
++static NSString *hunterControlKey(int index) {
++    return [NSString stringWithFormat:@"%d", index];
++}
++
++@interface HunterPad : UIView <UIGestureRecognizerDelegate>
++- (void)attachSettingsToWindow:(UIWindow *)window;
+ - (void)setPhysicalControllerConnected:(BOOL)connected;
+ @end
+ static __weak HunterPad *activePad;
+@@ -27,12 +111,32 @@
+     Key keys[18]; int count;
+     CGFloat scale, width, height, leftEdge, rightEdge, bottomEdge;
+     UIImage *atlas;
++    CGPoint stickCenter;
++    UIButton *gearButton;
++    DmTransientGear *gearVisibility;
++    NSMutableDictionary *customLayout;
++    UIView *editor;
++    UIStackView *editorBar;
++    CAShapeLayer *highlight;
++    UIButton *smaller, *larger, *fainter, *brighter;
++    int selection, dragging;
++    CGPoint dragOffset;
+ }
+ - (instancetype)initWithFrame:(CGRect)frame {
+     if ((self = [super initWithFrame:frame])) {
+         self.backgroundColor = UIColor.clearColor; self.multipleTouchEnabled = YES;
+         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+         owners = [NSMapTable strongToStrongObjectsMapTable];
++        customLayout = [[NSUserDefaults.standardUserDefaults dictionaryForKey:HunterLayoutKey] mutableCopy]
++            ?: [NSMutableDictionary dictionary];
++        gearButton = [UIButton buttonWithType:UIButtonTypeSystem];
++        gearButton.tintColor = [UIColor colorWithRed:0.93 green:0.82 blue:0.64 alpha:1];
++        gearButton.backgroundColor = [UIColor colorWithWhite:0.04 alpha:0.30];
++        gearButton.layer.cornerRadius = 10;
++        gearButton.accessibilityLabel = @"设置";
++        gearButton.showsMenuAsPrimaryAction = YES;
++        [gearButton setImage:[UIImage systemImageNamed:@"gearshape.fill"] forState:UIControlStateNormal];
++        [self addSubview:gearButton];
+         NSString *path = [[NSBundle mainBundle] pathForResource:@"hunter-glyphs-atlas" ofType:@"png"];
+         atlas = path ? [UIImage imageWithContentsOfFile:path] : nil;
+         if (!atlas.CGImage) atlas = [UIImage imageNamed:@"hunter-glyphs-atlas.png"];
+@@ -40,8 +144,36 @@
+     }
+     return self;
+ }
++- (void)attachSettingsToWindow:(UIWindow *)window {
++    gearVisibility = [[DmTransientGear alloc] initWithPad:window button:gearButton];
++    [self updateSettingsMenu];
++}
++
++- (void)updateSettingsMenu {
++    __weak HunterPad *weakPad = self;
++    UIAction *mods = [UIAction actionWithTitle:@"模组" image:[UIImage systemImageNamed:@"shippingbox"]
++        identifier:nil handler:^(__unused UIAction *action) {
++            pthread_mutex_lock(&mu); menuRequested = 1; pthread_mutex_unlock(&mu);
++        }];
++    UIAction *layout = [UIAction actionWithTitle:@"自定义按键" image:[UIImage systemImageNamed:@"move.3d"]
++        identifier:nil handler:^(__unused UIAction *action) {
++            [weakPad openEditor];
++        }];
++    UIAction *hide = [UIAction actionWithTitle:@"设置键自动隐藏" image:[UIImage systemImageNamed:@"eye.slash"]
++        identifier:nil handler:^(__unused UIAction *action) {
++            HunterPad *pad = weakPad;
++            if (pad) {
++                [pad->gearVisibility setAutomatic:!pad->gearVisibility.isAutomatic];
++                [pad updateSettingsMenu];
++            }
++        }];
++    hide.state = gearVisibility.isAutomatic ? UIMenuElementStateOn : UIMenuElementStateOff;
++    gearButton.menu = [UIMenu menuWithChildren:@[layout,hide,mods]];
++}
++
+ - (void)setPhysicalControllerConnected:(BOOL)connected {
+     if (connected) {
++        if (editor) [self closeEditor:NO];
+         [owners removeAllObjects]; leftTouch = nil; cameraTouch = nil;
+         pthread_mutex_lock(&mu); buttons = 0; memset(axes, 0, sizeof axes); menuRequested = 0; pthread_mutex_unlock(&mu);
+     }
+@@ -49,6 +181,33 @@
+     self.userInteractionEnabled = !connected;
+     if (!connected) [self setNeedsDisplay];
+ }
++- (CGRect)layoutArea {
++    return CGRectMake(leftEdge, self.safeAreaInsets.top + 4, MAX(0,rightEdge-leftEdge),
++        MAX(0,bottomEdge-self.safeAreaInsets.top-4));
++}
++- (CGFloat)setting:(NSString *)field index:(int)i min:(CGFloat)min max:(CGFloat)max {
++    NSNumber *value = customLayout[hunterControlKey(i)][field];
++    return [value isKindOfClass:NSNumber.class] && isfinite(value.doubleValue)
++        ? hunterClamp(value.doubleValue,min,max) : 1;
++}
++- (CGFloat)controlScale:(int)i { return [self setting:@"scale" index:i min:0.65 max:1.6]; }
++- (CGFloat)controlOpacity:(int)i { return [self setting:@"opacity" index:i min:0.2 max:1]; }
++- (CGPoint)center:(int)i defaultPoint:(CGPoint)base radius:(CGFloat)radius {
++    CGRect safe = self.layoutArea;
++    NSDictionary *item = customLayout[hunterControlKey(i)];
++    if (!item || CGRectIsEmpty(safe)) return base;
++    NSNumber *x = item[@"x"], *y = item[@"y"];
++    if ([x isKindOfClass:NSNumber.class] && [y isKindOfClass:NSNumber.class] &&
++        isfinite(x.doubleValue) && isfinite(y.doubleValue)) {
++        base = CGPointMake(CGRectGetMinX(safe)+hunterClamp(x.doubleValue,0,1)*safe.size.width,
++                           CGRectGetMinY(safe)+hunterClamp(y.doubleValue,0,1)*safe.size.height);
++    }
++    CGFloat mx = MIN(radius,safe.size.width*0.5);
++    CGFloat my = MIN(radius,safe.size.height*0.5);
++    return CGPointMake(hunterClamp(base.x,CGRectGetMinX(safe)+mx,CGRectGetMaxX(safe)-mx),
++                       hunterClamp(base.y,CGRectGetMinY(safe)+my,CGRectGetMaxY(safe)-my));
++}
++
+ - (void)buildKeys {
+     width=self.bounds.size.width; height=self.bounds.size.height;
+     UIEdgeInsets safe=self.safeAreaInsets;
+@@ -75,17 +234,40 @@
+     CGFloat mid=(leftEdge+rightEdge)/2;
+     ADD(mid-54*s,top+25*s,18*s,BIT(BTN_MINUS),12,@"特殊 −");
+     ADD(mid+12*s,top+25*s,18*s,BIT(BTN_PLUS),14,@"菜单 +");
+-    ADD(mid+78*s,top+25*s,18*s,0,15,@"模组");
++    CGFloat gearSize = MAX(34,36*s);
++    gearButton.frame = CGRectMake(mid+78*s-gearSize*0.5,top+25*s-gearSize*0.5,gearSize,gearSize);
++    for (int i=0;i<count;i++) {
++        Key *key = &keys[i];
++        key->r *= [self controlScale:i];
++        CGPoint center = [self center:i defaultPoint:CGPointMake(key->x,key->y) radius:key->r+12*s];
++        key->x = center.x;
++        key->y = center.y;
++    }
++    stickCenter = [self center:HunterStick defaultPoint:CGPointMake(leftEdge+66*s,bottomEdge-77*s)
++                        radius:57*s*[self controlScale:HunterStick]];
+ #undef ADD
+ }
+-- (void)layoutSubviews { [super layoutSubviews]; [self buildKeys]; [self setNeedsDisplay]; }
++- (void)layoutSubviews {
++    [super layoutSubviews];
++    [self buildKeys];
++    if (editor) [self layoutEditor];
++    [self setNeedsDisplay];
++}
+ - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
+ - (void)drawRect:(CGRect)rect {
+     (void)rect; CGContextRef ctx=UIGraphicsGetCurrentContext();
+-    UIFont *font=[UIFont systemFontOfSize:MAX(8,9*scale) weight:UIFontWeightMedium];
+-    NSDictionary *attrs=@{NSFontAttributeName:font, NSForegroundColorAttributeName:[UIColor colorWithRed:0.96 green:0.91 blue:0.79 alpha:0.95]};
+     for (int i=0;i<count;i++) {
+-        Key k=keys[i]; CGRect r=CGRectMake(k.x-k.r,k.y-k.r,2*k.r,2*k.r);
++        Key k=keys[i];
++        CGFloat opacity=[self controlOpacity:i];
++        if (opacity < 1) {
++            CGContextSaveGState(ctx);
++            CGContextSetAlpha(ctx,opacity);
++            CGRect visual=CGRectMake(k.x-2*k.r,k.y-k.r-2,4*k.r,2*k.r+24*scale+4);
++            CGContextBeginTransparencyLayerWithRect(ctx,visual,NULL);
++        }
++        UIFont *font=[UIFont systemFontOfSize:MAX(8,9*scale*[self controlScale:i]) weight:UIFontWeightMedium];
++        NSDictionary *attrs=@{NSFontAttributeName:font, NSForegroundColorAttributeName:[UIColor colorWithRed:0.96 green:0.91 blue:0.79 alpha:0.95]};
++        CGRect r=CGRectMake(k.x-k.r,k.y-k.r,2*k.r,2*k.r);
+         [[UIColor colorWithWhite:0.04 alpha:0.30] setFill]; [[UIBezierPath bezierPathWithOvalInRect:r] fill];
+         [[UIColor colorWithRed:0.75 green:0.61 blue:0.41 alpha:0.65] setStroke]; UIBezierPath *p=[UIBezierPath bezierPathWithOvalInRect:r]; p.lineWidth=1.4*scale; [p stroke];
+         if (atlas.CGImage) { size_t w=CGImageGetWidth(atlas.CGImage),h=CGImageGetHeight(atlas.CGImage); int col=k.icon%4,row=k.icon/4;
+@@ -99,19 +281,35 @@
+             [fallback drawAtPoint:CGPointMake(k.x-z.width/2,k.y-z.height/2) withAttributes:keyAttrs];
+         }
+         CGSize t=[k.name sizeWithAttributes:attrs]; [k.name drawAtPoint:CGPointMake(k.x-t.width/2,k.y+k.r+2*scale) withAttributes:attrs];
+-    }
+-    CGPoint c=CGPointMake(leftEdge+66*scale,bottomEdge-77*scale); CGFloat r=57*scale;
++        if (opacity < 1) {
++            CGContextEndTransparencyLayer(ctx);
++            CGContextRestoreGState(ctx);
++        }
++    }
++    CGFloat stickScale = scale * [self controlScale:HunterStick];
++    CGPoint c=stickCenter; CGFloat r=57*stickScale;
++    CGFloat stickOpacity=[self controlOpacity:HunterStick];
++    if (stickOpacity < 1) {
++        CGContextSaveGState(ctx);
++        CGContextSetAlpha(ctx,stickOpacity);
++        CGFloat bounds=64*stickScale;
++        CGContextBeginTransparencyLayerWithRect(ctx,CGRectMake(c.x-bounds,c.y-bounds,bounds*2,bounds*2),NULL);
++    }
+     CGContextSetFillColorWithColor(ctx,[UIColor colorWithWhite:0.04 alpha:0.20].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(c.x-r,c.y-r,2*r,2*r));
+     CGContextSetStrokeColorWithColor(ctx,[UIColor colorWithRed:0.75 green:0.61 blue:0.41 alpha:0.55].CGColor); CGContextSetLineWidth(ctx,1.5*scale); CGContextStrokeEllipseInRect(ctx,CGRectMake(c.x-r,c.y-r,2*r,2*r));
+     CGPoint knob=c;
+-    if(leftTouch) { CGFloat dx=leftPoint.x-c.x,dy=leftPoint.y-c.y,d=hypot(dx,dy),limit=40*scale; if(d>limit){dx*=limit/d;dy*=limit/d;} knob=CGPointMake(c.x+dx,c.y+dy); }
+-    CGFloat kr=22*scale; CGContextSetFillColorWithColor(ctx,[UIColor colorWithRed:0.78 green:0.65 blue:0.43 alpha:0.40].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(knob.x-kr,knob.y-kr,2*kr,2*kr));
++    if(leftTouch) { CGFloat dx=leftPoint.x-c.x,dy=leftPoint.y-c.y,d=hypot(dx,dy),limit=40*stickScale; if(d>limit){dx*=limit/d;dy*=limit/d;} knob=CGPointMake(c.x+dx,c.y+dy); }
++    CGFloat kr=22*stickScale; CGContextSetFillColorWithColor(ctx,[UIColor colorWithRed:0.78 green:0.65 blue:0.43 alpha:0.40].CGColor); CGContextFillEllipseInRect(ctx,CGRectMake(knob.x-kr,knob.y-kr,2*kr,2*kr));
+     CGContextSetStrokeColorWithColor(ctx,[UIColor colorWithRed:0.90 green:0.78 blue:0.58 alpha:0.78].CGColor); CGContextStrokeEllipseInRect(ctx,CGRectMake(knob.x-kr,knob.y-kr,2*kr,2*kr));
++    if (stickOpacity < 1) {
++        CGContextEndTransparencyLayer(ctx);
++        CGContextRestoreGState(ctx);
++    }
+ }
+ - (void)publish {
+     uint64_t m=0; int a[4]={0};
+     for (UITouch *t in owners) { int idn=[[owners objectForKey:t] intValue]; if(idn>=0 && idn<count) m|=keys[idn].mask; }
+-    if(leftTouch) { CGPoint c=CGPointMake(leftEdge+66*scale,bottomEdge-77*scale); CGFloat dx=(leftPoint.x-c.x)/(48*scale),dy=(c.y-leftPoint.y)/(48*scale),len=hypot(dx,dy); if(len>1)dx/=len,dy/=len; if(len>0.1)a[0]=dx*32767,a[1]=dy*32767; }
++    if(leftTouch) { CGPoint c=stickCenter; CGFloat reach=48*scale*[self controlScale:HunterStick]; CGFloat dx=(leftPoint.x-c.x)/reach,dy=(c.y-leftPoint.y)/reach,len=hypot(dx,dy); if(len>1)dx/=len,dy/=len; if(len>0.1)a[0]=dx*32767,a[1]=dy*32767; }
+     if(cameraTouch) { CGFloat dx=(cameraPoint.x-cameraStart.x)/(55*scale),dy=(cameraStart.y-cameraPoint.y)/(55*scale); a[2]=fmax(-1,fmin(1,dx))*32767; a[3]=fmax(-1,fmin(1,dy))*32767; }
+     pthread_mutex_lock(&mu); buttons=m; memcpy(axes,a,sizeof a); pthread_mutex_unlock(&mu);
+ }
+@@ -119,9 +317,9 @@
+     (void)event;
+     for(UITouch *t in touches) { CGPoint p=[t locationInView:self]; int best=-1; CGFloat bd=1;
+         for(int i=0;i<count;i++){ Key k=keys[i]; CGFloat d=hypot(p.x-k.x,p.y-k.y)/MAX(k.r*1.2,22); if(d<bd)best=i,bd=d; }
+-        if(best>=0){ if(keys[best].mask==0){ pthread_mutex_lock(&mu); menuRequested=1; pthread_mutex_unlock(&mu); } else [owners setObject:@(best) forKey:t]; continue;}
+-        CGPoint c=CGPointMake(leftEdge+66*scale,bottomEdge-77*scale);
+-        if(!leftTouch && hypot(p.x-c.x,p.y-c.y)<65*scale){leftTouch=t;leftPoint=p;[owners setObject:@(-1) forKey:t];}
++        if(best>=0){ [owners setObject:@(best) forKey:t]; continue;}
++        CGPoint c=stickCenter;
++        if(!leftTouch && hypot(p.x-c.x,p.y-c.y)<65*scale*[self controlScale:HunterStick]){leftTouch=t;leftPoint=p;[owners setObject:@(-1) forKey:t];}
+         else if(!cameraTouch && p.x>width*0.45){cameraTouch=t;cameraStart=cameraPoint=p;[owners setObject:@(-2) forKey:t];}
+     }
+     [self publish]; [self setNeedsDisplay];
+@@ -129,8 +327,141 @@
+ - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftPoint=[t locationInView:self]; if(t==cameraTouch){ cameraPoint=[t locationInView:self]; CGFloat dx=cameraPoint.x-cameraStart.x,dy=cameraPoint.y-cameraStart.y,d=hypot(dx,dy),r=55*scale; if(d>r) cameraStart=CGPointMake(cameraPoint.x-dx*r/d,cameraPoint.y-dy*r/d); }} [self publish]; [self setNeedsDisplay]; }
+ - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { (void)event; for(UITouch *t in touches){if(t==leftTouch)leftTouch=nil; if(t==cameraTouch)cameraTouch=nil; [owners removeObjectForKey:t];} [self publish]; [self setNeedsDisplay]; }
+ - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self touchesEnded:touches withEvent:event]; }
++
++- (CGRect)editorTarget:(int)index {
++    CGFloat radius = index == HunterStick ? 57*scale*[self controlScale:index] : keys[index].r;
++    CGPoint center = index == HunterStick ? stickCenter : CGPointMake(keys[index].x,keys[index].y);
++    return CGRectMake(center.x-radius,center.y-radius,radius*2,radius*2);
++}
++- (int)controlAt:(CGPoint)point {
++    int best = -1;
++    CGFloat distance = 1;
++    for (int i=0;i<HunterControlCount;i++) {
++        if (i >= count && i != HunterStick) continue;
++        CGRect target = [self editorTarget:i];
++        CGFloat d = hypot(point.x-CGRectGetMidX(target),point.y-CGRectGetMidY(target))
++                  / MAX(target.size.width*0.5 + 10, 22);
++        if (d < distance) { best = i; distance = d; }
++    }
++    return best;
++}
++- (void)layoutEditor {
++    editor.frame=self.bounds;
++    CGRect safe=self.layoutArea;
++    CGSize s=[editorBar systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
++    editorBar.frame=CGRectMake(CGRectGetMidX(safe)-s.width/2,CGRectGetMaxY(safe)-s.height-8,s.width,s.height);
++    smaller.enabled=larger.enabled=fainter.enabled=brighter.enabled=(selection>=0);
++    highlight.hidden=selection<0;
++    if (selection>=0)
++        highlight.path=[UIBezierPath bezierPathWithOvalInRect:CGRectInset([self editorTarget:selection],-5,-5)].CGPath;
++}
++- (UIButton *)editorButton:(NSString *)title action:(SEL)action {
++    UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];
++    [button setTitle:title forState:UIControlStateNormal];
++    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
++    button.titleLabel.font=[UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
++    [button.widthAnchor constraintGreaterThanOrEqualToConstant:42].active=YES;
++    [button.heightAnchor constraintEqualToConstant:44].active=YES;
++    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
++    return button;
++}
++- (void)openEditor {
++    if (editor || self.hidden) return;
++    [owners removeAllObjects]; leftTouch = nil; cameraTouch = nil;
++    [self publish];
++    selection = dragging = -1;
++    editor = [[UIView alloc] initWithFrame:self.bounds];
++    editor.accessibilityViewIsModal = YES;
++    highlight = [CAShapeLayer layer];
++    highlight.fillColor = UIColor.clearColor.CGColor;
++    highlight.strokeColor = UIColor.whiteColor.CGColor;
++    highlight.lineDashPattern = @[@5,@4];
++    [editor.layer addSublayer:highlight];
++    smaller=[self editorButton:@"缩小" action:@selector(editorShrink)];
++    larger=[self editorButton:@"放大" action:@selector(editorGrow)];
++    fainter=[self editorButton:@"减淡" action:@selector(editorFade)];
++    brighter=[self editorButton:@"增亮" action:@selector(editorBrighten)];
++    editorBar=[[UIStackView alloc] initWithArrangedSubviews:@[
++        [self editorButton:@"取消" action:@selector(editorCancel)],
++        [self editorButton:@"默认" action:@selector(editorReset)],
++        smaller,larger,fainter,brighter,
++        [self editorButton:@"保存" action:@selector(editorSave)]]];
++    editorBar.backgroundColor=[UIColor colorWithWhite:0.07 alpha:0.94];
++    editorBar.layer.cornerRadius=12;
++    [editor addSubview:editorBar];
++    UIPanGestureRecognizer *pan=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(editorPan:)];
++    pan.maximumNumberOfTouches=1; pan.delegate=self;
++    UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editorTap:)];
++    tap.delegate=self;
++    [tap requireGestureRecognizerToFail:pan];
++    [editor addGestureRecognizer:pan]; [editor addGestureRecognizer:tap];
++    [self addSubview:editor];
++    [gearVisibility setEditing:YES];
++    [self setNeedsLayout];
++}
++- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
++    return ![touch.view isDescendantOfView:editorBar];
++}
++- (void)editorTap:(UITapGestureRecognizer *)tap {
++    selection=[self controlAt:[tap locationInView:self]];
++    [self setNeedsLayout];
++}
++- (void)editorPan:(UIPanGestureRecognizer *)pan {
++    CGPoint p=[pan locationInView:self];
++    if (pan.state==UIGestureRecognizerStateBegan) {
++        CGPoint delta=[pan translationInView:self];
++        CGPoint start=CGPointMake(p.x-delta.x,p.y-delta.y);
++        selection=dragging=[self controlAt:start];
++        if (dragging>=0) {
++            CGRect box=[self editorTarget:dragging];
++            dragOffset=CGPointMake(CGRectGetMidX(box)-start.x,CGRectGetMidY(box)-start.y);
++        }
++        [self setNeedsLayout];
++    }
++    if (dragging<0) return;
++    if (pan.state==UIGestureRecognizerStateFailed || pan.state==UIGestureRecognizerStateCancelled) {
++        dragging=-1;
++        return;
++    }
++    CGRect safe=self.layoutArea;
++    if (!CGRectIsEmpty(safe)) {
++        NSString *key=hunterControlKey(dragging);
++        NSMutableDictionary *item=[customLayout[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++        item[@"x"]=@(hunterClamp((p.x+dragOffset.x-CGRectGetMinX(safe))/safe.size.width,0,1));
++        item[@"y"]=@(hunterClamp((p.y+dragOffset.y-CGRectGetMinY(safe))/safe.size.height,0,1));
++        customLayout[key]=item;
++        [self setNeedsLayout];
++    }
++    if (pan.state==UIGestureRecognizerStateEnded) dragging=-1;
++}
++- (void)editorChange:(NSString *)field delta:(CGFloat)delta lower:(CGFloat)lower upper:(CGFloat)upper {
++    if (selection<0) return;
++    NSString *key=hunterControlKey(selection);
++    NSMutableDictionary *item=[customLayout[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++    item[field]=@(hunterClamp([self setting:field index:selection min:lower max:upper]+delta,lower,upper));
++    customLayout[key]=item;
++    [self setNeedsLayout];
++}
++- (void)editorShrink { [self editorChange:@"scale" delta:-0.1 lower:0.65 upper:1.6]; }
++- (void)editorGrow { [self editorChange:@"scale" delta:0.1 lower:0.65 upper:1.6]; }
++- (void)editorFade { [self editorChange:@"opacity" delta:-0.1 lower:0.2 upper:1]; }
++- (void)editorBrighten { [self editorChange:@"opacity" delta:0.1 lower:0.2 upper:1]; }
++- (void)editorReset { [customLayout removeAllObjects]; selection=-1; [self setNeedsLayout]; }
++- (void)editorCancel { [self closeEditor:NO]; }
++- (void)editorSave { [self closeEditor:YES]; }
++- (void)closeEditor:(BOOL)save {
++    if (save) [NSUserDefaults.standardUserDefaults setObject:customLayout forKey:HunterLayoutKey];
++    else customLayout=[[NSUserDefaults.standardUserDefaults dictionaryForKey:HunterLayoutKey] mutableCopy]
++        ?: [NSMutableDictionary dictionary];
++    [editor removeFromSuperview];
++    editor=nil; editorBar=nil; highlight=nil;
++    smaller=larger=fainter=brighter=nil;
++    [gearVisibility setEditing:NO];
++    [self setNeedsLayout];
++}
++
+ - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)event {
+-    if (overlay_menu_open() && count>0) { Key k=keys[count-1]; if(hypot(p.x-k.x,p.y-k.y)>MAX(k.r*1.2,22)) return nil; }
++    if (overlay_menu_open() && !editor && (gearButton.hidden || !CGRectContainsPoint(gearButton.frame,p))) return nil;
+     return [super hitTest:p withEvent:event];
+ }
+ @end
+@@ -148,6 +479,7 @@
+             [nc removeObserver:vc name:UIKeyboardWillShowNotification object:nil];
+             [nc removeObserver:vc name:UIKeyboardWillHideNotification object:nil];
+             HunterPad *v=[[HunterPad alloc] initWithFrame:w.bounds]; [w addSubview:v]; activePad = v;
++            [v attachSettingsToWindow:w];
+             [v setPhysicalControllerConnected:atomic_load(&controllerConnected) != 0];
+         }
+     });
