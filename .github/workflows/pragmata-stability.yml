@@ -1,6 +1,7 @@
 # nxnative's iOS app for one game with placeholder module sections (ci/build_shell.py): no game files, keys or game-derived data.
 # The layout input holds only numbers and IDs (module sizes and offsets, the derived game.tsv with build IDs and display version).
-name: PRAGMATA stability
+name: PRAGMATA performance
+run-name: PRAGMATA iOS frame-time candidate
 
 on:
   workflow_dispatch:
@@ -46,10 +47,10 @@ jobs:
           printf "%s" "$ORBIT_PATCH" | base64 --decode | gzip -dc > "$RUNNER_TEMP/orbit-editor.patch"
           git -C nxnative apply --check "$RUNNER_TEMP/orbit-editor.patch"
           git -C nxnative apply "$RUNNER_TEMP/orbit-editor.patch"
-      - name: Apply the stability patch
+      - name: Apply the performance patch
         run: |
-          git -C nxnative apply --check "$GITHUB_WORKSPACE/ci/patches/pragmata-stability.patch"
-          git -C nxnative apply "$GITHUB_WORKSPACE/ci/patches/pragmata-stability.patch"
+          git -C nxnative apply --check "$GITHUB_WORKSPACE/ci/patches/pragmata-performance.patch"
+          git -C nxnative apply "$GITHUB_WORKSPACE/ci/patches/pragmata-performance.patch"
       - name: Layout
         env:
           LAYOUT: ewogICJnYW1lIjogIjA0MDBDNzYwMjQ3MTAwMDAiLAogICJnYW1lX3RzdiI6ICIjIFBSQUdNQVRBIChTd2l0Y2ggMiwgdXBkYXRlIHYxOTY2MDgpLiBQbGF5cyBvbiB0aGUgTWFjOiBzZWUgUkVBRE1FLm1kXG4jIFJFIEVuZ2luZSwgU0RLIDIwLjUuMTUgYnVpbHQgZm9yIHRoZSBTd2l0Y2ggMiAoT3VuY2UpLCBOVk4yOyBIYXZvaywgV3dpc2UuIE1vZHVsZXMgbWFpbiwgc2RrOyBzdWJzZGswIGFuZCBzdWJzZGsxIChDIC8gbGliYykgYXJlIG5vdCBsb2FkZWQuXG4jIFRoZSBSb21GUyBpcyB0aHJlZSBLUEtBIFBBS3M7IHRoZSBzaGFkZXJzIGFyZSBTREYgZGVmaW5pdGlvbnMgaW5zaWRlIHRoZW0gKHNoYWRlcl9zcGxpdC5weSBrcGthX2pvYnMgLyBzZGZfc2hhZGVycyksIGFzIGluIE1vbnN0ZXIgSHVudGVyIFJpc2UuXG4jIE1hZGUgYnkgc2NyaXB0cy9idWlsZF9pcGFfZnJvbV9uc3AucHkgZnJvbSB0aGUgc3VydmV5IChkbS9nYW1lcy9wcm9maWxlX2d1ZXNzLnB5KTsgdGhlIHZhbHVlcyBiZWxvdyBhcmUgaXRzIGd1ZXNzZXMsIGtlcHQgYXMgdGhlIGdhbWUgcnVucyB3aXRoIHRoZW0uXG5cbiMgLS0tLSBJZGVudGl0eSAtLS0tXG50aXRsZV9pZFx0MDQwMEM3NjAyNDcxMDAwMFxucHJvZ3JhbV9pZFx0MDQwMEM3NjAyNDcxMDAwMFxuXG4jIC0tLS0gQXBwIC0tLS1cbm5hbWVcdFBSQUdNQVRBXG5pcGFcdFByYWdtYXRhLmlwYVxuYXBwX2NhdGVnb3J5XHRwdWJsaWMuYXBwLWNhdGVnb3J5LmdhbWVzXG5vcF9tb2RlXHRoYW5kaGVsZFxuXG4jIC0tLS0gVmVyc2lvbnMgLS0tLVxuYnVpbGRcdHYxOTY2MDhcdHYxOTY2MDhcdG1haW49YjgzZWViOTRkYTM1ZmYwN2QwY2ZhOTU1ODc1ZTgyNThcdHNkaz04MjBjZDdkMDk2YWFjNDQ4NjkzZjUwNDQwMGNjMjM3NVxucGFja2FnZVx0djE5NjYwOFxuc2hhZGVyX3ZlcnNpb25zXHR2MTk2NjA4XG5cbiMgLS0tLSBGaWxlcyAtLS0tXG4jIG5vdCBsb2FkZWQsIG1haW4gdGFrZXMgbm90aGluZyBmcm9tIHRoZW0gdGhlIGhvc3QgZG9lcyBub3Qgc3VwcGx5OiBzdWJzZGswIChDIC8gbGliYyksIHN1YnNkazEgKEMgLyBsaWJjKVxubW9kdWxlc1x0bWFpbiBzZGtcbnJvbWZzX21hcmtlclx0cmVfY2h1bmtfMDAwLnBha1xuemlwX3N0b3JlXHQucGFrOi5tZXRhbGxpYlxuXG4jIC0tLS0gTWVtb3J5IC0tLS1cbiMgVGhlIDQwIEdpQiBhbGlhcyBtYXBwaW5nIGlzIHRoZSBzZXR0aW5nIHZlcmlmaWVkIGluIG54bmF0aXZlIGlzc3VlICMyOTM1LlxubWVtX3Jlc2VydmVcdDB4QTI4MDAwMDAwXG5tZW1fYWxpYXNcdDB4QTAwMDAwMDAwXG5tZW1fc3RhY2tcdDB4MTAwMDAwMDBcbiMgdGhlIHNkayBpcyBidWlsdCBmb3IgdGhlIFN3aXRjaCAyIChzcGVjOiBPdW5jZSk6IGl0cyA5IEdCIHBvb2xcbmFwcF9wb29sXHQweDI0MDAwMDAwMFxuIyB0aGUgTlBETSBkZWNsYXJlcyAyMCBNQiBvZiBzeXN0ZW0gcmVzb3VyY2VcbnN5c19yZXNvdXJjZVx0MHgxNDAwMDAwXG5cblxuIyAtLS0tIEZyYW1lIHJhdGUgLS0tLVxuIyBUaGUgbGF1bmNoZXIncyBGcmFtZSByYXRlIHJvdyAoZG0vZ2FtZXMvc2V0dGluZ3MudHN2IERNX0ZQU19UQVJHRVQpOiAzMCBieSBkZWZhdWx0LCB0aGUgcGxheWVyIG1heSBjaG9vc2UgNjAuIFRoaXMgbWFpbiBoYXMgbm8gZnJhbWUgc3RlcCBzdHViIGFuZCBSRSBFbmdpbmUncyBmcmFtZVxuIyBsaW1pdCBpcyBub3Qgb25lIHRoZSBob3N0IHdyaXRlcywgc28gdGhlIDMwIGNvbWVzIGZyb20gdGhlIGRpc3BsYXkgbGluayAoaGxlX252bi5jIG52bl9saW5rX2Zwc19jYXApLCB3aGljaCBuZWVkcyBmcHNfbGlua19jYXA6IHRoZSBsaW5rIHJ1bnMgYXQgMzAgSHosIHRoZSBnYW1lJ3Mgb3duXG4jIHByZXNlbnQgaW50ZXJ2YWwgc3RheXMsIGFuZCBSRSBFbmdpbmUgc3RlcHMgYnkgdGhlIHRpbWUgdGhhdCBwYXNzZWQsIHNvIDMwIGZwcyBpcyAzMCBmcmFtZXMgd2l0aCAzMy4zIG1zIHN0ZXBzLiBNZWFzdXJlZCBvbiBhbiBpUGhvbmUgMTggUHJvOiA2MC4wIGZwcyBhdCB0aGUgZGVmYXVsdCxcbiMgdGhlIGRldmljZSBob2xkaW5nIGl0IGZvciBtaW51dGVzOyAzMCBjaGVja2VkIHRoZXJlIHRvbyAodGhlIHJvdydzIDMwOiBzdGVhZHkgMzAsIHRoZSBnYW1lJ3Mgc3BlZWQgdW5jaGFuZ2VkKVxuZnBzX3RhcmdldFx0MzBcbmZwc19saW5rX2NhcFx0b25cblxuIyAtLS0tIFNoYWRlciBzcGxpdCAtLS0tXG4jIFJFIEVuZ2luZTogdGhlIHNoYWRlcnMgYXJlIFNERiBkZWZpbml0aW9ucyBpbnNpZGUgdGhlIEtQS0EgUEFLcyAoc2hhZGVyX3NwbGl0LnB5IGtwa2Ffam9icyAvIHNkZl9zaGFkZXJzKSwgYXMgaW4gTW9uc3RlciBIdW50ZXIgUmlzZSdzIGFuZCBQUkFHTUFUQSdzIHByb2ZpbGVzXG5zaGFkZXJfZ3JvdXBzXHRyZV9jaHVuaz1zZGZcbnNoYWRlcl9ub3RlXHRQUkFHTUFUQSBzaGFkZXJzXG5cbiMgaGVhcCBjaGVjazogMjAyNi0xMS0wOSwgaGVhcCAwLjEyIEdCXG5cbiMgLS0tLSBBZGRyZXNzIHJlZ2lvbiBjaGVjayAtLS0tXG4jIHRoZSBnYW1lIGNhbGxzIG52bkRldmljZVNldERlcHRoTW9kZSB3aXRoIG5lYXIgPSAwIGluIHRoZSBjaGVjayBib290OiB0aGUgcGlwZWxpbmUgYmFzZXMgbWFkZSBiZWZvcmUgaXQgcnVucyBhcmUgbWFkZSBmb3IgdGhhdCBtb2RlXG5kZXB0aF9tb2RlXHR6ZXJvXG5cbiMgYWRkcmVzcyByZWdpb25zOiAyMDI2LTExLTEwLCBpbiBpdHMgZmlyc3QgMTUgcyBpbiBubk1haW4gdGhlIGdhbWUncyByZWdpb25zIHJlYWNoIGFsaWFzICszOC40MSBHQiwgcGFzdCB0aGUgcHJvZmlsZSdzIDQuMzggR0IgYWxpYXMgcmVnaW9uLCB0aGUgaVBob25lIGxheW91dDogdGhlIHJlcXVlc3QgcmV0dXJuaW5nIHRvIG1haW4rMHgxMmRlNWE0IHRha2VzIDMyLjAwIEdCOiBhIHNtYWxsZXIgb25lIHdvcmtzIG9ubHkgaWYgaXRzIGFsbG9jYXRvciBwbGFjZXMgbm90aGluZyBieSBmaXhlZCBvZmZzZXRzOyB0aGUgcmVxdWVzdCByZXR1cm5pbmcgdG8gbWFpbisweDE0Y2RhNjAgdGFrZXMgNi4yNyBHQjogYSBzbWFsbGVyIG9uZSB3b3JrcyBvbmx5IGlmIGl0cyBhbGxvY2F0b3IgcGxhY2VzIG5vdGhpbmcgYnkgZml4ZWQgb2Zmc2V0cyAoZG9jcy9yZWZlcmVuY2UvbWVtb3J5Lm1kLCBWaXJ0dWFsIGFkZHJlc3MgbWVtb3J5IGFuZCB0aGUgYWxpYXMgcmVnaW9uKSAocmV3cml0ZSA2ZDg3ZTRkYzk1ZWUpXG5cbiMgLS0tLSBUb3VjaCBjb250cm9scyAtLS0tXG4jIFRoZSBPcmJpdCBsYXlvdXQgKERtR2FtZXBhZC5tIHRvdWNoX3N0eWxlIG9yYml0KTogYnVpbHQgYXJvdW5kIHRoZSBnYW1lJ3MgY29udHJvbHMgKGFpbSBaTCwgc2hvb3QgWlIsIGhhY2tpbmcgPSBaTCArIGZhY2Uga2V5cyBhcyBjdXJzb3Iga2V5cywgT3ZlcmRyaXZlIExTICsgUlMsIHdlYXBvbnMgb24gdGhlIEQtcGFkKVxucGFkX2xheW91dFx0ZnVsbFxudG91Y2hfc3R5bGVcdG9yYml0XG4iLAogICJkaXNwbGF5X25hbWUiOiAiUFJBR01BVEEiLAogICJ2ZXJzaW9uIjogIjE5NjYwOCIsCiAgImxhbmd1YWdlIjogInpoLUhhbnMiLAogICJtb2R1bGVzIjogWwogICAgewogICAgICAibmFtZSI6ICJtYWluIiwKICAgICAgInNpemUiOiAxODgxNjk2NTIsCiAgICAgICJoZWFkZXIiOiB7CiAgICAgICAgIlBBVENIX09GRiI6ICItMHgzZDAwMDAiLAogICAgICAgICJLRVlfUEFHRV9PRkYiOiAiMHhiNDEwMDAwIiwKICAgICAgICAiS0VZX1BBR0VfU0laRSI6ICIweDQwMDAiLAogICAgICAgICJURVhUX0VORCI6ICIweDdjMTg2OTAiLAogICAgICAgICJJTUFHRV9TSVpFIjogIjB4YjQxNDAwMCIsCiAgICAgICAgIkZJTEVfSU1BR0VfTEVOIjogIjB4YjFhYzAwMCIKICAgICAgfQogICAgfSwKICAgIHsKICAgICAgIm5hbWUiOiAic2RrIiwKICAgICAgInNpemUiOiAxNzUyNzYzNiwKICAgICAgImhlYWRlciI6IHsKICAgICAgICAiUEFUQ0hfT0ZGIjogIjB4MTAwMDAwMCIsCiAgICAgICAgIktFWV9QQUdFX09GRiI6ICIweGZmMDAwMCIsCiAgICAgICAgIktFWV9QQUdFX1NJWkUiOiAiMHg0MDAwIiwKICAgICAgICAiVEVYVF9FTkQiOiAiMHg3YjY5OTAiCiAgICAgIH0KICAgIH0KICBdCn0=
@@ -61,10 +62,10 @@ jobs:
       - name: Compile GPU tests and check CPU feedback
         working-directory: nxnative/dm/gfx/tests
         run: |
-          make GAME=0400C76024710000 t_gpu_lost t_arena_trim
+          make GAME=0400C76024710000 t_gpu_lost t_arena_trim t_gmem_words
           ./t_gpu_lost --feedback-only
           if ./t_gpu_lost --check-device; then
-            make GAME=0400C76024710000 check_t_gpu_lost check_t_arena_trim
+            make GAME=0400C76024710000 check_t_gpu_lost check_t_arena_trim check_t_gmem_words
           else
             echo "::notice::The virtual runner has no Metal 4 device. GPU execution remains untested."
           fi
@@ -76,7 +77,7 @@ jobs:
           ls -la "$GITHUB_WORKSPACE"/DmIOS-shell.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: PRAGMATA stability
+          name: PRAGMATA performance
           path: |
             DmIOS-shell.zip
             shell.json

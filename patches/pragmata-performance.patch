@@ -1,0 +1,297 @@
+diff --git a/dm/games/0400C76024710000/README.md b/dm/games/0400C76024710000/README.md
+index 8de601d..d106cde 100644
+--- a/dm/games/0400C76024710000/README.md
++++ b/dm/games/0400C76024710000/README.md
+@@ -2,6 +2,32 @@
+ 
+ A Switch 2 game: update v196608, SDK 20.5.15 built for the Switch 2 (`Ounce`), NVN2. Capcom's RE Engine, with Havok and Wwise. Modules `main` and `sdk`; `subsdk0` and `subsdk1` (C / libc) are not loaded. It plays on the Mac: the title, a new game's intro (the ship, the tower and the lunar base; last run on chain `79939b004bb5`) and, with the save those runs left, walking through the station's first rooms (chain `d24f05cf9d78`). Tested on an M4 Pro (48 GB) only.
+ 
++## iOS stability candidate
++
++A submission can finish on the CPU feedback path after a Metal error while the
++guest is waiting for a shared-event signal the queue did not execute. The host
++now publishes only the completed fence prefix, after its CPU-side reports land.
++The synthetic regression leaves the GPU signal absent and verifies that an
++ordinary fault wakes the wait path without revoking access.
++
++On iOS, near Metal's recommended working-set size, the completed scratch
++arenas above the existing reuse pool are eligible for retirement sooner.
++In-flight arenas retain the original fence protection. Outside that pressure
++range, the residency worker can apply the removals of idle upload staging
++allocations. The submit thread still applies them synchronously under pressure.
++
++The shader library and game build are unchanged. The absolute memory minimum,
++the opening movie's address fault, skipped tessellated draws and the cost of
++live streaming are open. Compare the same route with `DM_MEMSTAT=memstat.tsv`
++for resident memory and `DM_NVN_WAITS=1` for CPU waits. Inspect the first failed
++command buffer and the first tessellation refusal in `Documents/log.txt` before
++changing texture or shader behaviour.
++
++## iOS frame-time candidate
++
++- [Raw pool table updates at command-buffer seal](../../../docs/reference/shaders.md#raw-pool-table-words-that-predate-the-pools) reduce repeated table builds and residency commits during streaming. The shader library is shared with the stability build.
++- In the reported route, GPU work passed 500 ms even on frames with no pipeline builds or texture uploads. Three variants in `cs_sdf.bin` exhausted their loop budget (`251426e9d44fd558`, `a39d5e8748386dea`, `8c48c7ffd257c63d`). The log includes the encoded frame number and a sampled cumulative count for each affected kernel. The queue mismatch remains open in [#2664](https://github.com/seedds/nxnative/issues/2664). Compare the same save and route with `DM_NVN_GPUPROF=every:15` in a dedicated diagnostic run.
++
+ ## What it needs
+ 
+ | Setting | Where | Why |
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index dcd92e9..f00a251 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -282,7 +282,7 @@ static _Atomic int g_up_pending;
+ static _Atomic int g_gpu_lost;
+ void front_gpu_lost(void);
+ __attribute__((weak)) void front_gpu_lost(void) { MDIE("GPU access revoked: macOS runs none of this process's GPU work any more"); }   // the Mac front end leaves full screen, says why and quits
+-static void gpu_lost_release(void) {
++static void gpu_publish_completed_fence(void) {
+     static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;   // never lower it
+     os_unfair_lock_lock(&lk); uint64_t f = atomic_load(&g_done); if (g_ev && g_ev.signaledValue < f) g_ev.signaledValue = f; os_unfair_lock_unlock(&lk);
+ }
+@@ -298,7 +298,7 @@ static void gpu_lost_check(NSError *e, const char *where) {
+     if (!e || atomic_load(&g_gpu_lost) || !gpu_err_has(e, MTL4CommandQueueErrorAccessRevoked, 0) || atomic_exchange(&g_gpu_lost, 1)) return;
+     MLOG("[RED] GPU access revoked: the %s command buffer was ignored (fences back %llu of %llu); macOS runs none of this process's GPU work any more, so the game stops", where,
+          (unsigned long long)atomic_load(&g_done), (unsigned long long)atomic_load(&g_fence));
+-    gpu_lost_release();
++    gpu_publish_completed_fence();
+     front_gpu_lost();
+ }
+ // DM_TEST_GPU_LOST=n (for testing): from the n-th submission on, imitate the revoked access without faulting the GPU: each submission's feedback reports it, in the shape the #1326
+@@ -1874,6 +1874,23 @@ static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc
+ // submission in pieces (nvn_queue.inc), a game makes many small ones a frame: Ocarina of Time's 28-37 took the pool's 8 about once a frame, and the submit thread waited for the
+ // GPU (PR #2090). ALLOC_SHARE bounds an allocator's memory while no frame ends (a loading screen): after that many submissions the next takes another
+ static _Atomic uint64_t g_cur_frame;
++// Called from the submit thread. Sample once per frame so the staging and
++// arena caches can react to Metal's budget without querying at every submission.
++static int gpu_cache_under_pressure(void) {
++#if TARGET_OS_IPHONE
++    static uint64_t checked = UINT64_MAX;
++    static int pressure;
++    uint64_t frame = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
++    if (frame != checked) {
++        checked = frame;
++        uint64_t budget = g_dev.recommendedMaxWorkingSetSize;
++        pressure = budget && g_dev.currentAllocatedSize >= budget - budget / 10;
++    }
++    return pressure;
++#else
++    return 0;
++#endif
++}
+ static uint64_t g_alloc_frame, g_alloc_shared, g_alloc_shares; static int g_alloc_used;   // the current allocator: the frame it was taken in, the submissions it has served since its reset; submissions that shared one so far
+ int mtl_wait(uint64_t fence, uint64_t timeout_ns);
+ static int mtl_wait_at(uint64_t fence, uint64_t timeout_ns, int site);
+@@ -3003,6 +3020,13 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
+     pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
+     nvn_queue_gpu_progress();
+ }
++// A failed commit can return its feedback without the queue executing its shared-event
++// signal. SyncWait may already be sleeping on that event. Publish the completed prefix
++// only after its CPU-side reports have landed, and keep recoverable errors on the same queue.
++static void post_feedback_complete(uint64_t fence, uint64_t c0, uint64_t c1, NSError *error) {
++    post_complete(fence, c0, c1);
++    if (error || atomic_load(&g_gpu_lost)) gpu_publish_completed_fence();
++}
+ static uint64_t g_sub_ready;   // mtl_sub_ready, for the submission being encoded
+ void mtl_sub_ready(uint64_t t) { g_sub_ready = t; }
+ static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
+@@ -3065,8 +3089,7 @@ uint64_t mtl_sub_commit(void) {
+         if (cb.error) { atomic_store(&g_last_commit_error, 1); res_top_once(cb.error); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("[RED] command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("[RED] state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("[RED] command buffer execution error: %s", cb.error.localizedDescription.UTF8String); }
+         char where[64]; snprintf(where, sizeof where, "fence %llu, its last command buffer", (unsigned long long)fence); cbs_feedback(cbs, cb.error, where);
+         gpu_lost_check(lost_test ? gpu_lost_test_error() : cb.error, "submission");
+-        post_complete(fence, c0, c1);
+-        if (atomic_load(&g_gpu_lost)) gpu_lost_release();   // the GPU signals none of these fences
++        post_feedback_complete(fence, c0, c1, cb.error);
+         defer_drain(); defer_idle_commit();
+     }];
+     void arena_commit(uint64_t fence); arena_commit(fence);
+@@ -3672,8 +3695,13 @@ static void up_idle_release(void) {
+             age->window_ns = now;
+         }
+     }
+-    // Commit the removals before this submission can allocate more GPU memory.
+-    if (g_up_idle_n != before) res_commit();
++    // An idle slot has no GPU users. The residency queue retains the retired
++    // allocations until their removal is committed. Under memory pressure,
++    // release them before the next submission can allocate more staging.
++    if (g_up_idle_n != before) {
++        if (TARGET_OS_IPHONE && !gpu_cache_under_pressure()) res_commit_async(nil);
++        else res_commit();
++    }
+     static uint64_t said_ns;
+     if (!said_ns || now - said_ns >= 30000000000ull || (!before && g_up_idle_n)) {
+         said_ns = now;
+@@ -6963,7 +6991,7 @@ static void shmap_read(void) {
+     id<MTLFunction> mesh_obj;   // a mesh shader with no task: the object function that launches its workgroups in blocks of DMSH_MESH_GRID (dmsh_meshstage.py main0_o)
+     uint32_t tess_out_cp, tess_in_bytes, tess_md; int tess_ok;   // a hull / domain shader rewritten for replay (dmsh_tess.py, nvn_tess.inc); tess_md: a domain's mode (dmsh_tess.mode_bits)
+     id<MTLComputePipelineState> geo_pso; int geo_pso_failed, cps_failed;   // cps_failed: Metal refused this compute shader's pipeline (dispatch): its dispatches are skipped without asking again
+-    uint64_t loop_sub, loop_gpu; _Atomic int loop_reported;   // this submission's per-kernel cap-hit state; feedback logs at most once per loaded kernel
++    uint64_t loop_sub, loop_gpu; _Atomic uint64_t loop_hits;   // per-submission cap-hit record and count of submissions with a hit for this kernel
+     int16_t *geo_slot; uint32_t geo_words;   // a lean passthrough kernel (dmsh_geometry.lean): capture word -> record slot (-1: not read), record words
+     NvShader *geo_lean_v[5]; uint8_t geo_lean_tried;   // a geometry shader's lean kernels by input topology (looked up once)
+     NvShader *geo_bg_v[5], *geo_bgv_v; uint8_t geo_bg_tried;   // its kernels by input topology (_bg<n>) and its reader (_bgv), looked up once (bit 7: the reader)
+@@ -8385,7 +8413,9 @@ static unsigned arena_trim(uint64_t idle) {
+ void arena_begin(void) {
+     if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; }
+     g_cur_arena = nil;
+-    arena_trim(ARENA_IDLE);
++    // At the budget, shorten the idle age for excess scratch. arena_trim
++    // still keeps pending fences and the small reuse pool untouched.
++    arena_trim(arena_trim_on() && gpu_cache_under_pressure() ? ARENA_IDLE / 4 : ARENA_IDLE);
+     if (g_arena_next) { NvArena *a = g_arena_next; g_arena_next = nil; [g_arenas removeObjectIdenticalTo:a]; [g_sub_arenas addObject:a]; g_cur_arena = a; }
+ }
+ void arena_commit(uint64_t fence) {
+@@ -13070,13 +13100,15 @@ static id<MTLBuffer> gmem_map(void) {
+         }
+     }
+     if (over) RED_ONCE(140, "raw global memory: %d more memory pools than the %d entries of the pool table; addresses in them are not reached", over, DMSH_GMEM_MAP_ENTRIES - 1);
+-    res_add(b); res_commit();
++    res_add(b);   // cb_commit names the set and submits only after applying its queued changes
+     if (g_gmem_buf) defer_obj_release(g_gmem_buf);
+     g_gmem_buf = b; g_gmem_gen = gen;
+     { static int said; if (!said++) MLOG("raw global memory: pool table of %d ranges (pool generation %llu), rebuilt whenever a pool comes or goes", n - 1, (unsigned long long)gen); }
+     return b;
+ }
+ static uint64_t gmem_map_gpu(void) { return gmem_map().gpuAddress; }
++// Keep the last snapshot during encoding. The seal updates the argument and write log together.
++static id<MTLBuffer> gmem_encode_map(void) { return g_gmem_buf ?: gmem_map(); }
+ // A raw pointer read from a fixed storage-buffer word can reach a pool whose address no NVN getter handed out. Discover it before the draw, including when its argument block is
+ // reused; gmem_commit_patch then gives every block the complete table. Record the logical pool/run, not each interior pointer or the Metal buffer's page-rounded padding.
+ // The CPU sees only pointer values available now (or a complete queued inline update). GPU-generated values still rely on the table; this does not fix task/mesh ordering hangs.
+@@ -13197,7 +13229,7 @@ static uint64_t gml_take(id<MTLBuffer> map) {
+     if (predict) for (int i = 0; i < g_gml_n; i++) sbw_note(g_gml_lo[i], g_gml_hi[i] - g_gml_lo[i], SBW_GPU);
+     pthread_mutex_unlock(&g_gml_mu);
+     if (!predict) sbw_note(0, 0, SBW_GPU);
+-    if (!b) { b = [g_dev newBufferWithLength:GML_BYTES options:MTLResourceStorageModeShared]; res_add(b); res_commit(); }
++    if (!b) { b = [g_dev newBufferWithLength:GML_BYTES options:MTLResourceStorageModeShared]; res_add(b); }
+     memset(b.contents, 0, GML_BYTES);
+     g_gml_on = 1; uint64_t fence = g_fence + 1;   // this submission's fence (mtl_sub_commit)
+     NvGmlLog *log = [NvGmlLog new]; log->b = b; log->map = map; g_gml_last = log;
+@@ -13847,7 +13879,7 @@ static int encode_args_full(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stag
+             slots[aid] = (sh->c1buf ? sh->c1_gpu : zero_bank_gpu()) + (sh->c1buf ? sh->c1off : 0);
+             USE(cb, MTLResourceUsageRead);
+         } else if (b->kind == NVN_RB_GMEM || b->kind == NVN_RB_GMEML) {   // B: the memory pool table for addresses traced to no storage buffer (gmem_map), and the write log of those stores (gml_take)
+-            if (!raw_map) raw_map = gmem_map();   // the log and the shader use the same table even if a pool comes in during the encode
++            if (!raw_map) raw_map = gmem_encode_map();
+             slots[aid] = b->kind == NVN_RB_GMEM ? raw_map.gpuAddress : gml_take(raw_map);
+             if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_taken = 1;
+             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
+@@ -16726,10 +16758,14 @@ static uint64_t loop_state(NvShader *cs) {
+         memcpy(state, &abort_gpu, sizeof abort_gpu); memcpy(state + DMSH_LOOP_HIT, &hit, sizeof hit);
+         if (!cs->loop_sub) MLOG("compute loop containment: kernel %s, %u loop sites (including helpers)", cs->key, cs->rf.loop_sites);
+         cs->loop_sub = fence; cs->loop_gpu = b.gpuAddress + off;
++        uint64_t frame = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
+         [g_commit_blocks addObject:^{
+             uint32_t site; memcpy(&site, (const uint8_t *)b.contents + off + DMSH_LOOP_HIT, sizeof site);
+-            if (site != UINT32_MAX && !atomic_exchange(&cs->loop_reported, 1))
+-                MLOG("[RED] loop cap hit: submission %llu, kernel %s, loop site %u (loop_sites in its reflection; cause open)", (unsigned long long)fence, cs->key, site);
++            if (site == UINT32_MAX) return;
++            uint64_t hits = atomic_fetch_add_explicit(&cs->loop_hits, 1, memory_order_relaxed) + 1;
++            if (!(hits & (hits - 1)))
++                MLOG("[RED] loop cap hit: submission %llu, kernel %s, loop site %u (frame %llu, %llu submissions with a hit; cause open)",
++                     (unsigned long long)fence, cs->key, site, (unsigned long long)frame, (unsigned long long)hits);
+         }];
+     }
+     return cs->loop_gpu;
+diff --git a/dm/gfx/tests/t_gmem_words.m b/dm/gfx/tests/t_gmem_words.m
+index 57f3bbb..4a2e7bd 100644
+--- a/dm/gfx/tests/t_gmem_words.m
++++ b/dm/gfx/tests/t_gmem_words.m
+@@ -23,7 +23,7 @@ int main(void) { @autoreleasepool {
+     uint64_t a = (uint64_t)(uintptr_t)mem;
+     mtl_pool_add(mem, 4 * MB); mtl_pool_addressed(mem, 4 * MB);
+     mtl_sub_begin();
+-    uint64_t t0 = gmem_map_gpu();                    // the table two argument blocks were encoded with
++    uint64_t t0 = gmem_encode_map().gpuAddress;     // the table two argument blocks were encoded with
+     uint64_t w0 = t0, w1 = t0, w2 = 0;
+     uint64_t words0, older0, behind0; mtl_gmem_words(&words0, &older0, &behind0);
+     gmem_slot_note(&w0, NULL); gmem_slot_note(&w1, NULL);
+@@ -33,6 +33,7 @@ int main(void) { @autoreleasepool {
+     CHECK("two words counted, none out of date", words - words0 == 2 && older == older0 && behind == behind0);
+     mtl_pool_add(mem + 8 * MB, 4 * MB); mtl_pool_addressed(mem + 8 * MB, 4 * MB);              // a pool made after the blocks were encoded
+     CHECK("the table the words hold lacks it", !table_has(t0, a + 8 * MB));
++    CHECK("encoding another argument keeps the last snapshot", gmem_encode_map().gpuAddress == t0);
+     gmem_slot_note(&w0, NULL); gmem_slot_note(&w1, NULL);
+     gmem_commit_patch();
+     uint64_t t1 = g_gmem_buf.gpuAddress;
+@@ -70,6 +71,9 @@ int main(void) { @autoreleasepool {
+     gmem_slot_note(&w8, NULL);
+     mdi_wait();
+     CHECK("a count wait's commit points the words encoded before it at the pools", w8 == g_gmem_buf.gpuAddress && table_has(w8, a + 48 * MB));
++    pthread_mutex_lock(&g_res_mu);
++    CHECK("the table and write log enter residency before submission", [g_res containsAllocation:g_gmem_buf] && [g_res containsAllocation:lg->b]);
++    pthread_mutex_unlock(&g_res_mu);
+     CHECK("and leaves none of them noted, so the next commit does not rewrite them after the GPU ran them", g_gmem_nslots == 0);
+     CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+     CHECK("GPU has no submission error", !mtl_last_commit_error());
+diff --git a/dm/gfx/tests/t_gpu_lost.m b/dm/gfx/tests/t_gpu_lost.m
+index 8f480ec..337fb1e 100644
+--- a/dm/gfx/tests/t_gpu_lost.m
++++ b/dm/gfx/tests/t_gpu_lost.m
+@@ -33,7 +33,43 @@ static tex_t picture(void) {
+     // NOLINTEND(clang-analyzer-osx.cocoa.RetainCount)
+ }
+ static int present_asks(const tex_t *t) { int before = atomic_load(&g_layer_asks); mtl_present_wait(mtl_present(t, 1. / 60, NULL, NULL)); return atomic_load(&g_layer_asks) - before; }
+-int main(void) { @autoreleasepool {
++// Holds the CPU-visible event value without creating a Metal device. The
++// virtual CI runner can still check the real feedback/completion code path.
++@interface TestFenceEvent : NSObject
++@property(nonatomic) uint64_t signaledValue;
++@end
++@implementation TestFenceEvent
++@end
++
++static void recoverable_feedback(NSString *mtl4, NSString *iogpu) {
++    // Model a recoverable command-buffer error with an omitted GPU signal. Feedback
++    // is the only completion for this empty submission; no fault is sent to Metal.
++    uint64_t recoverable = ++g_fence;
++    post_rec *pending = &g_postr[recoverable % POST_RING];
++    atomic_store(&pending->claimed, 0);
++    atomic_store(&pending->fence, recoverable);
++    CHECK("the shared event still precedes the errored submission", g_ev.signaledValue < recoverable);
++    NSError *fault = nested(mtl4, MTL4CommandQueueErrorTimeout, nested(iogpu, 11, nil));
++    post_feedback_complete(recoverable, 0, 0, fault);
++    CHECK("recoverable feedback wakes the shared-event path", g_ev.signaledValue >= recoverable);
++    CHECK("CPU-side completion landed before the signal", pending->claimed && mtl_completed_fence() == recoverable);
++    CHECK("recoverable feedback does not revoke GPU access", !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls));
++}
++
++int main(int argc, char **argv) { @autoreleasepool {
++    if (argc == 2 && !strcmp(argv[1], "--check-device"))
++        return ![MTLCreateSystemDefaultDevice() supportsFamily:MTLGPUFamilyMetal4];
++    if (argc == 2 && !strcmp(argv[1], "--feedback-only")) {
++        TestFenceEvent *event = [TestFenceEvent new];
++        g_ev = (id<MTLSharedEvent>)event;
++        recoverable_feedback(MTL4CommandQueueErrorDomain, @"IOGPUCommandQueueErrorDomain");
++        uint64_t completed = mtl_completed_fence();
++        event.signaledValue = completed + 1;
++        gpu_publish_completed_fence();
++        CHECK("CPU publication never lowers the shared event", event.signaledValue == completed + 1);
++        printf("t_gpu_lost --feedback-only: %d checks, %d failed\n", checks, failed);
++        return failed != 0;
++    }
+     alarm(60); setvbuf(stdout, NULL, _IONBF, 0);
+     setenv("DM_TEST_GPU_LOST", "3", 1);
+     setenv("DM_PRESENT_LINK", "0", 1); setenv("DM_PRESENT_SNAP", "0", 1);   // presents on the present thread, straight from the game's texture
+@@ -52,6 +88,8 @@ int main(void) { @autoreleasepool {
+     CHECK("submissions before run as before", ok && !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls) && !mtl_last_commit_error());
+     CHECK("a present before asks for the layer", present_asks(&pic) == 1);
+ 
++    recoverable_feedback(mtl4, iogpu);
++
+     f = submit_wait(&ok, &ms);
+     printf("submission %llu (revoked): SyncWait %s in %.1f ms, shared event at %llu\n", (unsigned long long)f, ok ? "returned" : "timed out", ms, (unsigned long long)g_ev.signaledValue);
+     CHECK("the front end is told", atomic_load(&g_gpu_lost) && atomic_load(&test_gpu_lost_calls) == 1);
+diff --git a/docs/reference/shaders.md b/docs/reference/shaders.md
+index 2fde43a..14b1cb4 100644
+--- a/docs/reference/shaders.md
++++ b/docs/reference/shaders.md
+@@ -3141,6 +3141,8 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
+ - **Found on:** The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, profile in PR #1299): on the author's stack, loading the outdoor save, 5,729 of 154,107 words held an older table than the current one by frame 5,100 and 2,582 held the current one behind the pools. Whether this is what is left of the hang in issue #1326, minutes after a clean table growth, is open.
+ - **Check:** `t_gmem_words` (words noted, a pool made after them, an older table, a table that lags, a commit with no words, the commit before a count wait).
+ 
++On a PRAGMATA iOS run, raw pool tables accounted for 18,796 MB of accumulated residency additions over frames 2,101–2,400. The encoding path now reuses the last table and coalesces pool changes until `cb_seal`. The table and write log join the residency commit that precedes GPU execution. `t_gmem_words` checks snapshot reuse and residency after an indirect-count wait. The size above counts repeated additions, including pools that enter more than once.
++
+ ### Extended products behind spirv-cross's optnone helper
+ 
+ - **Symptom:** integer divisions by a constant cost GPU time that the compiler should have folded away. The MSL holds calls such as `(spvMulExtended<_2, uint>(uint(_5), 16u))._m1`, and spirv-cross defines `spvMulExtended` as `[[clang::optnone]]`, so each product stays a call to an unoptimized function.
