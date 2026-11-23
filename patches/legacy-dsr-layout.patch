@@ -1,0 +1,652 @@
+diff --git a/dm/ios/Sources/DmGameMenu.h b/dm/ios/Sources/DmGameMenu.h
+index 05915fe..b1fe9d4 100644
+--- a/dm/ios/Sources/DmGameMenu.h
++++ b/dm/ios/Sources/DmGameMenu.h
+@@ -7,6 +7,9 @@
+ extern "C" {
+ #endif
+ void *dm_game_menu(void);   // GameMenu.swift: a retained UIMenu, rebuilt each time it opens
++void dm_pad_edit_start(void);
++bool dm_gear_auto_hide(void);
++void dm_gear_set_auto_hide(bool enabled);
+ int dm_pad_layout(void);   // DmGamepad.m: 0 = 2D, 1 = 3D, 2 = Tap, 3 = profile-specific Game style, 4 = Hidden
+ bool dm_pad_layout_offered(int layout);   // Tap needs handheld mode; Game style and Hidden need a profile opt-in
+ void dm_pad_layout_set(int layout);   // releases every touch first, and is saved for the next start
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index 92dd7b6..ee41d67 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -37,6 +37,7 @@
+ #import "DmPadArt.h"   // dm_pad_art() and DM_ART_*: the Game style layout's glyphs
+ 
+ enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
++enum { B_MOVE_STICK = B_N, B_WHEEL, B_COMBO0, B_COMBO1, B_COMBO2, B_EDIT_END };
+ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
+ 
+ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+@@ -155,6 +156,7 @@ static const CGFloat
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 in 3D and game-style layouts)
+ static NSString *const k_styleNames[B_N] = {@"翻滚 A", @"互动 B", @"单双持 X", @"道具 Y", @"L3", @"锁定 R3", @"格挡 L", @"轻击 R", @"弹反 ZL", @"重击 ZR", @"菜单 +", @"手势 −", @"左手 ◀", @"法术 ▲", @"右手 ▶", @"道具 ▼"};
+ static NSString *const k_standardNames[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−", @"◀", @"▲", @"▶", @"▼"};
++static NSString *const k_custom_key = @"DmStylePadPlacementV1";
+ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap, 3 = game style, 4 = hidden
+ int dm_opmode(void);   // hle_oe.c: 0 = handheld
+ static int packaged_pad_layout(void) {
+@@ -163,9 +165,13 @@ static int packaged_pad_layout(void) {
+ }
+ static BOOL game_style_available(void) { return DM_GAME_PAD_LAYOUT >= 3 || packaged_pad_layout() >= 3; }
+ 
+-@interface DmGamepad : UIView
++@interface DmGamepad : UIView <UIGestureRecognizerDelegate>
+ - (void)arrange:(DmLayout)layout;
+ - (BOOL)menuTakes:(CGPoint)p;
++- (BOOL)gearHidesAutomatically;
++- (void)startPadEditor;
++- (void)closePadEditor:(BOOL)save;
++- (void)setGearHidesAutomatically:(BOOL)value;
+ @end
+ // The menu button: a UIButton whose menu is the in-game menu (UIKit draws it and takes the touches while it is open). Its hit circle is larger than the drawn one, and a key nearer
+ // to the touch wins (− / + sit beside it), so it asks the pad
+@@ -177,7 +183,17 @@ static BOOL game_style_available(void) { return DM_GAME_PAD_LAYOUT >= 3 || packa
+ static __weak DmGamepad *g_view;
+ static void pads_start(void);   // Physical controllers, below
+ 
++#include "DmTransientGear.inc"
++
+ @implementation DmGamepad {
++    DmTransientGear *_transientGear;
++    NSMutableDictionary *_customPad;
++    UIView *_padEditor;
++    UIStackView *_editorBar;
++    CAShapeLayer *_editorSelection;
++    UIButton *_editorSmaller, *_editorLarger, *_editorFainter, *_editorBrighter;
++    int _editedControl, _draggedControl;
++    CGPoint _dragOffset;
+     NSMapTable<UITouch *, NSNumber *> *_owner;     // touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
+     UITouch *_stick[2]; CGPoint _stickNow[2];      // the touch holding each stick and where it is now (0 left, 1 right)
+     CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
+@@ -283,6 +299,9 @@ static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMak
+         __weak DmGamepad *weakSelf = self;
+         [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
+         [self addSubview:_menu];
++        _transientGear = [[DmTransientGear alloc] initWithPad:self button:_menu];
++        _customPad = [[NSUserDefaults.standardUserDefaults dictionaryForKey:k_custom_key] mutableCopy]
++            ?: [NSMutableDictionary dictionary];
+         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+         int fallback = packaged_pad_layout();
+         int l = saved ? (int)saved.integerValue : fallback;
+@@ -300,6 +319,9 @@ static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMak
+     }
+     return self;
+ }
++- (BOOL)gearHidesAutomatically { return _transientGear.isAutomatic; }
++- (void)setGearHidesAutomatically:(BOOL)value { [_transientGear setAutomatic:value]; }
++
+ - (void)applyLayout {   // show / hide the controls for the current layout
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+     for (int b = 0; b < B_N; b++) { _key[b].hidden = _tap || (_style ? !styleKey(b) : (fullOnly(b) && !_full));
+@@ -309,14 +331,15 @@ static void placeArt(CALayer *l, CGPoint c, CGFloat size) { l.bounds = CGRectMak
+         if (b >= B_LEFT) _label[b].hidden = !_style; }   // the D-pad arms carry no caption; the equipment selector's slots do
+     _ring.hidden = _knob.hidden = _tap;
+     [CATransaction commit];
+-    _controls.hidden = _padOff || _hidden;   // Hidden, or a controller on: the screen shows the game and nothing else
++    _controls.hidden = !_padEditor && (_padOff || _hidden);   // Hidden, or a controller on: the screen shows the game and nothing else
+     _menu.alpha = _hidden ? 0.22 : 1;        // still there and still a touch target: it is the only way back
+     _menu.backgroundColor = _style ? k_sIdle : k_idle;
+     _menu.layer.borderColor = (_style ? k_sLine : k_line).CGColor;
+     _menu.tintColor = _style ? k_sText : k_text;
+ }
+ - (int)padLayout { return _tap ? 2 : _full ? 1 : _style ? 3 : _hidden ? 4 : 0; }
+-- (void)setPadLayout:(int)l {   // the in-game menu's pick: release every touch first (no key stays held), save, lay out again
++- (void)setPadLayout:(int)l {
++    if (_padEditor) [self closePadEditor:NO];   // the in-game menu's pick: release every touch first (no key stays held), save, lay out again
+     if (!dm_pad_layout_offered(l)) return;
+     [self reset];
+     _full = l == 1; _tap = l == 2; _style = l == 3; _hidden = l == 4;
+@@ -356,7 +379,7 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+ - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
+ - (CGFloat)faceR { return K_FACE_R * self.u; }
+ - (CGFloat)faceHitR { return MAX(self.faceR * 1.25, _layout.separated ? 22 : 0); }
+-- (CGPoint)facePos:(int)b {
++- (CGPoint)defaultFacePos:(int)b {
+     if (_style) { CGRect s = self.corner; CGFloat u = self.u; CGFloat x = CGRectGetMaxX(s), y = CGRectGetMaxY(s);
+         switch (b) {
+             case B_A: return CGPointMake(x - K_STYLE_FACE_A_X * u, y - K_STYLE_FACE_A_Y * u);
+@@ -367,7 +390,7 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+     }
+     CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
+-- (CGPoint)stickHome {
++- (CGPoint)defaultStickHome {
+     if (_style) { CGRect s = self.corner; return CGPointMake(CGRectGetMinX(s) + K_STYLE_STICK_X * self.u, CGRectGetMaxY(s) - K_STYLE_STICK_Y * self.u); }
+     if (self.portraitControls) {
+         CGPoint p = [self portraitThumbCenter:NO];
+@@ -378,7 +401,10 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+     return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u);
+ }
+ - (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
+-- (CGFloat)stickR:(int)i { if (i) return K_RSTICK_R * self.u; return (_style ? K_STYLE_STICK_R : K_STICK_R) * self.u; }
++- (CGFloat)defaultMoveRadius { return (_style ? K_STYLE_STICK_R : K_STICK_R) * self.u; }
++- (CGFloat)stickR:(int)i {
++    return i ? K_RSTICK_R * self.u : [self defaultMoveRadius] * [self styleScale:B_MOVE_STICK];
++}
+ - (BOOL)inRightArea:(CGPoint)p { CGRect b = _layout.controls; return p.x >= CGRectGetMaxX(b) - b.size.width * (_style ? 0.5 : K_RSWIPE); }
+ - (CGPoint)dpadCenter {
+     if (self.portraitControls) {
+@@ -393,7 +419,7 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+ - (CGFloat)dpadGrab { return self.dpadR * (_style ? K_STYLE_SLOT_GRAB : K_DPAD_GRAB); }
+ static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
+ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
+-- (CGPoint)dropCenter:(int)b {
++- (CGPoint)defaultDropCenter:(int)b {
+     if (_style) { CGRect s = self.corner; CGFloat u = self.u;
+         if (b == B_ZL || b == B_L) return CGPointMake(CGRectGetMinX(s) + K_ZL_X * u, CGRectGetMinY(s) + (b == B_ZL ? K_ZL_Y : K_L_Y) * u);
+         CGFloat dx = b == B_R ? K_STYLE_LIGHT_X : K_STYLE_HEAVY_X;
+@@ -403,34 +429,98 @@ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
+     CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
+     CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_ZR || b == B_R, MAX((z ? K_ZL_X : K_L_X) * u, edge), CGRectGetMinY(s) + MAX((z ? K_ZL_Y : K_L_Y) * u, edge)); }
+-- (CGFloat)dropR:(int)b {
++- (CGFloat)defaultDropR:(int)b {
+     if (_style) { if (b == B_R) return K_STYLE_LIGHT_R * self.u; if (b == B_ZR) return K_STYLE_HEAVY_R * self.u; return K_STYLE_GUARD_R * self.u; }
+     return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u;
+ }
+-- (CGFloat)dropArt:(int)b {
++- (CGFloat)defaultDropArt:(int)b {
+     if (_style) { if (b == B_R) return K_STYLE_LIGHT_ART * self.u; if (b == B_ZR) return K_STYLE_HEAVY_ART * self.u; return K_STYLE_GUARD_ART * self.u; }
+-    return [self dropR:b];
++    return [self defaultDropR:b];
+ }
+-- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; CGFloat edge = _layout.separated ? 22 : 0;
++- (CGPoint)defaultClickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; CGFloat edge = _layout.separated ? 22 : 0;
+     return side(s, b == B_RS, MAX(K_CLICK_X * u, edge), CGRectGetMinY(s) + MAX(K_ZL_Y * u, edge)); }
+ - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u;
+     CGFloat w = (_style ? K_STYLE_PILL_W : K_PILL_W) * u, h = (_style ? K_STYLE_PILL_H : K_PILL_H) * u;
+     CGFloat dx = (_style ? K_STYLE_PILL_DX : K_PILL_DX) * u, y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * u;
+     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? dx : -dx), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0));   // − on the left, + on the right
++    CGFloat factor = [self styleScale:b];
++    if (_style && _customPad.count) c = [self styleCenter:b fallback:c radius:MAX(w, h) * 0.5 / MAX(u, 0.01) + 10];
++    w *= factor; h *= factor;
+     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+ - (CGPoint)menuCenter { CGRect s = self.safe; CGFloat y = (_style ? K_STYLE_PILL_Y : K_PILL_Y) * self.u; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(y, _layout.separated ? 14 : 0)); }
+ 
++static CGFloat clamp(CGFloat value, CGFloat low, CGFloat high) {
++    return MIN(MAX(value, low), high);
++}
++static NSString *placementKey(int control) {
++    return [NSString stringWithFormat:@"%d", control];
++}
++
++- (CGFloat)styleOpacity:(int)control {
++    NSNumber *value = _style ? _customPad[placementKey(control)][@"opacity"] : nil;
++    return [value isKindOfClass:NSNumber.class] && isfinite(value.doubleValue)
++        ? clamp(value.doubleValue, 0.2, 1) : 1;
++}
++
++- (CGFloat)styleScale:(int)control {
++    NSNumber *scale = _style ? _customPad[placementKey(control)][@"scale"] : nil;
++    return [scale isKindOfClass:NSNumber.class] && isfinite(scale.doubleValue)
++        ? clamp(scale.doubleValue, 0.65, 1.6) : 1;
++}
++
++- (CGPoint)styleCenter:(int)control fallback:(CGPoint)fallback radius:(CGFloat)radius {
++    NSDictionary *placement = _style ? _customPad[placementKey(control)] : nil;
++    CGRect safe = self.safe;
++    if (!placement || CGRectIsEmpty(safe)) return fallback;
++    NSNumber *x = placement[@"x"], *y = placement[@"y"];
++    CGPoint center = fallback;
++    if ([x isKindOfClass:NSNumber.class] && [y isKindOfClass:NSNumber.class] &&
++        isfinite(x.doubleValue) && isfinite(y.doubleValue)) {
++        center = CGPointMake(CGRectGetMinX(safe) + clamp(x.doubleValue, 0, 1) * safe.size.width,
++                             CGRectGetMinY(safe) + clamp(y.doubleValue, 0, 1) * safe.size.height);
++    }
++    // The full glyph and caption stay inside the safe area after a rotation or resize.
++    CGFloat margin = radius * [self styleScale:control] * self.u;
++    CGFloat dx = MIN(margin, safe.size.width / 2), dy = MIN(margin, safe.size.height / 2);
++    return CGPointMake(clamp(center.x, CGRectGetMinX(safe) + dx, CGRectGetMaxX(safe) - dx),
++                       clamp(center.y, CGRectGetMinY(safe) + dy, CGRectGetMaxY(safe) - dy));
++}
++
++- (CGPoint)facePos:(int)b {
++    if (!_style || !_customPad.count) return [self defaultFacePos:b];
++    return [self styleCenter:b fallback:[self defaultFacePos:b] radius:48];
++}
++- (CGPoint)stickHome {
++    if (!_style || !_customPad.count) return [self defaultStickHome];
++    return [self styleCenter:B_MOVE_STICK fallback:[self defaultStickHome] radius:[self defaultMoveRadius] / MAX(self.u, 0.01)];
++}
++- (CGPoint)dropCenter:(int)b {
++    if (!_style || !_customPad.count) return [self defaultDropCenter:b];
++    return [self styleCenter:b fallback:[self defaultDropCenter:b] radius:[self defaultDropR:b] / MAX(self.u, 0.01) + 14];
++}
++- (CGPoint)clickCenter:(int)b {
++    if (!_style || !_customPad.count) return [self defaultClickCenter:b];
++    return [self styleCenter:b fallback:[self defaultClickCenter:b] radius:26];
++}
++- (CGFloat)dropR:(int)b { return [self defaultDropR:b] * [self styleScale:b]; }
++- (CGFloat)dropArt:(int)b { return [self defaultDropArt:b] * [self styleScale:b]; }
++- (CGPoint)slotCenter:(int)b {
++    CGPoint c = self.dpadCenter;
++    CGFloat offset = K_STYLE_SLOT_OFFSET * self.u;
++    if (b == B_LEFT) c.x -= offset;
++    if (b == B_RIGHT) c.x += offset;
++    if (b == B_UP) c.y -= offset;
++    if (b == B_DOWN) c.y += offset;
++    return [self styleCenter:b fallback:c radius:K_STYLE_SLOT_H * 0.5 + 12];
++}
++
+ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
+ - (CGFloat)buttonDistance:(int)b point:(CGPoint)p {
+-    CGFloat u = self.u;
++    CGFloat u = self.u * [self styleScale:b];
+     if (_style && b >= B_A && b <= B_Y)
+         return dist(p, [self facePos:b]) / MAX(K_STYLE_FACE_R * u * 1.3, _layout.separated ? 22 : 0);
+     if (_style && b >= B_LEFT) {
+-        CGPoint c = self.dpadCenter;
+-        if (b == B_LEFT) c.x -= K_STYLE_SLOT_OFFSET * u;
+-        if (b == B_RIGHT) c.x += K_STYLE_SLOT_OFFSET * u;
+-        if (b == B_UP) c.y -= K_STYLE_SLOT_OFFSET * u;
+-        if (b == B_DOWN) c.y += K_STYLE_SLOT_OFFSET * u;
++        CGPoint c = [self slotCenter:b];
+         return MAX(fabs(p.x - c.x) / MAX(K_STYLE_SLOT_W * u * 0.6, 22), fabs(p.y - c.y) / MAX(K_STYLE_SLOT_H * u * 0.6, 22));
+     }
+     if (isDrop(b)) return dist(p, [self dropCenter:b]) / MAX([self dropR:b] * 1.35, _layout.separated ? 22 : 0);
+@@ -447,7 +537,7 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+         if (d <= 1 && (best < 0 || d < distance)) { best = b; distance = d; }
+     }
+     if (_style) for (int b = B_A; b <= B_Y; b++) {   // the Game style layout's action keys are keys of their own, with no diamond to slide on
+-        CGFloat d = dist(p, [self facePos:b]) / MAX(K_STYLE_FACE_R * self.u * 1.3, _layout.separated ? 22 : 0);
++        CGFloat d = dist(p, [self facePos:b]) / MAX(K_STYLE_FACE_R * self.u * [self styleScale:b] * 1.3, _layout.separated ? 22 : 0);
+         if (d <= 1 && (best < 0 || d < distance)) { best = b; distance = d; }
+     }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+@@ -653,7 +743,7 @@ static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { pl
+         _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
+     }
+     _controls.frame = self.layer.bounds;
+-    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b];
++    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; CGFloat u = self.u * [self styleScale:b];
+         if (_style) {   // independent mobile action keys: deliberately staggered instead of arranged as a controller diamond
+             setPath(_key[b], circlePath(c, K_STYLE_FACE_R * u)); _key[b].lineWidth = 2.0 * u;
+             placeArt(_art[b], c, K_STYLE_FACE_ART * u);
+@@ -665,6 +755,7 @@ static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { pl
+             placeLabel(_label[b], c, 20 * u);
+         } }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
++        CGFloat u = self.u * [self styleScale:b];
+         if (_style && isDrop(b)) {   // guard / parry stay near the left edge; attacks form the right-thumb combat cluster
+             CGPoint c = [self dropCenter:b]; CGFloat art = [self dropArt:b];
+             setPath(_key[b], circlePath(c, [self dropR:b])); _key[b].lineWidth = 2.0 * u;
+@@ -700,8 +791,8 @@ static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { pl
+     for (int i = 0; i < 4; i++) {
+         int b = arms[i].b;
+         if (_style) {   // four freestanding equipment cards, with no connected D-pad arms
+-            CGPoint c = CGPointMake(dc.x + arms[i].x * K_STYLE_SLOT_OFFSET * u,
+-                                    dc.y + arms[i].y * K_STYLE_SLOT_OFFSET * u);
++            CGPoint c = [self slotCenter:b];
++            CGFloat u = self.u * [self styleScale:b];
+             CGRect rc = CGRectMake(c.x - K_STYLE_SLOT_W * u / 2, c.y - K_STYLE_SLOT_H * u / 2,
+                                    K_STYLE_SLOT_W * u, K_STYLE_SLOT_H * u);
+             setPath(_key[b], CGPathCreateWithRoundedRect(rc, 7 * u, 7 * u, NULL));
+@@ -719,13 +810,213 @@ static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { pl
+     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
+     _ring.fillColor = (_style ? k_sIdle : k_ringFill).CGColor;
+     _ring.lineWidth = _style ? 2.0 * u : 1.5;
+-    CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
++    CGFloat k = (_style ? K_STYLE_KNOB_R : K_KNOB_R) * u * [self styleScale:B_MOVE_STICK]; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     setPath(_knob, circlePath(CGPointMake(k, k), k));
+     CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+     in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
+     [CATransaction commit];
+     [self refresh];
++    if (_padEditor) [self layoutPadEditor];
++}
++
++- (BOOL)editorShows:(int)b {
++    if (b < B_N) return !_key[b].hidden;
++    if (b == B_MOVE_STICK) return YES;
++    return NO;
++}
++
++- (CGPoint)editorCenter:(int)b {
++    if (b < B_LEFT) {
++        if (b <= B_Y) return [self facePos:b];
++        if (isDrop(b)) return [self dropCenter:b];
++        if (isClick(b)) return [self clickCenter:b];
++        CGRect pill = [self pillRect:b];
++        return CGPointMake(CGRectGetMidX(pill), CGRectGetMidY(pill));
++    }
++    if (b < B_N) return [self slotCenter:b];
++    if (b == B_MOVE_STICK) return self.stickHome;
++    return CGPointZero;
++}
++
++- (CGRect)editorTarget:(int)b {
++    CGPoint center = [self editorCenter:b];
++    if (b == B_MOVE_STICK) {
++        CGFloat radius = [self stickR:0];
++        return CGRectMake(center.x - radius, center.y - radius, 2 * radius, 2 * radius);
++    }
++    if (b < B_N) {
++        CGRect shape = _key[b].path ? CGPathGetBoundingBox(_key[b].path) : CGRectNull;
++        return _label[b] ? CGRectUnion(shape, _label[b].frame) : shape;
++    }
++    CGFloat radius = (b == B_WHEEL ? 35 : 30) * self.u * [self styleScale:b];
++    return CGRectMake(center.x - radius, center.y - radius, 2 * radius, 2 * radius);
++}
++- (int)editorControlAt:(CGPoint)p {
++    int best = -1;
++    CGFloat nearest = CGFLOAT_MAX;
++    for (int control = 0; control < B_EDIT_END; control++) {
++        if (![self editorShows:control]) continue;
++        if (!CGRectContainsPoint(CGRectInset([self editorTarget:control], -10, -10), p)) continue;
++        CGFloat d = dist(p, [self editorCenter:control]);
++        if (d < nearest) { nearest = d; best = control; }
++    }
++    return best;
++}
++
++- (void)layoutPadEditor {
++    _padEditor.frame = self.bounds;
++    CGRect safe = self.safe;
++    if (CGRectIsEmpty(safe)) return;
++    CGSize barSize = [_editorBar systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
++    _editorBar.frame = CGRectMake(CGRectGetMidX(safe) - barSize.width / 2,
++                                 CGRectGetMaxY(safe) - barSize.height - 8, barSize.width, barSize.height);
++    _editorSelection.hidden = _editedControl < 0;
++    _editorSmaller.enabled = _editedControl >= 0;
++    _editorLarger.enabled = _editedControl >= 0;
++    _editorFainter.enabled = _editorBrighter.enabled = _editedControl >= 0;
++    if (_editedControl >= 0) {
++        CGRect target = CGRectInset([self editorTarget:_editedControl], -5, -5);
++        _editorSelection.path = [UIBezierPath bezierPathWithRoundedRect:target cornerRadius:8].CGPath;
++    }
++}
++
++- (UIButton *)editorButton:(NSString *)title action:(SEL)action {
++    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++    UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
++    config.title = title;
++    config.baseForegroundColor = UIColor.whiteColor;
++    config.contentInsets = NSDirectionalEdgeInsetsMake(8, 9, 8, 9);
++    button.configuration = config;
++    [button.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
++    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
++    return button;
++}
++
++- (void)startPadEditor {
++    if (!_style || _padEditor) return;
++    [self reset];
++    _editedControl = _draggedControl = -1;
++    _padEditor = [[UIView alloc] initWithFrame:self.bounds];
++    _padEditor.accessibilityViewIsModal = YES;
++
++    _editorSelection = [CAShapeLayer layer];
++    _editorSelection.fillColor = UIColor.clearColor.CGColor;
++    _editorSelection.strokeColor = UIColor.whiteColor.CGColor;
++    _editorSelection.lineWidth = 1.5;
++    _editorSelection.lineDashPattern = @[@5, @4];
++    [_padEditor.layer addSublayer:_editorSelection];
++
++    _editorSmaller = [self editorButton:@"\u7f29\u5c0f" action:@selector(editorShrink)];
++    _editorLarger = [self editorButton:@"\u653e\u5927" action:@selector(editorGrow)];
++    _editorFainter = [self editorButton:@"减淡" action:@selector(editorFade)];
++    _editorBrighter = [self editorButton:@"增亮" action:@selector(editorBrighten)];
++    NSArray *buttons = @[
++        [self editorButton:@"\u53d6\u6d88" action:@selector(editorCancel)],
++        [self editorButton:@"\u6062\u590d\u9ed8\u8ba4" action:@selector(editorReset)],
++        _editorSmaller, _editorLarger, _editorFainter, _editorBrighter,
++        [self editorButton:@"\u4fdd\u5b58" action:@selector(editorSave)]
++    ];
++    _editorBar = [[UIStackView alloc] initWithArrangedSubviews:buttons];
++    _editorBar.axis = UILayoutConstraintAxisHorizontal;
++    _editorBar.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
++    _editorBar.layer.cornerRadius = 12;
++    [_padEditor addSubview:_editorBar];
++
++    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(editorPan:)];
++    pan.maximumNumberOfTouches = 1;
++    pan.delegate = self;
++    [_padEditor addGestureRecognizer:pan];
++    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editorTap:)];
++    tap.delegate = self;
++    [tap requireGestureRecognizerToFail:pan];
++    [_padEditor addGestureRecognizer:tap];
++    [self addSubview:_padEditor];
++    _controls.hidden = NO;
++    [_transientGear setEditing:YES];
++    [self setNeedsLayout];
++}
++
++- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
++    return ![touch.view isDescendantOfView:_editorBar];
++}
++
++- (void)editorTap:(UITapGestureRecognizer *)tap {
++    _editedControl = [self editorControlAt:[tap locationInView:self]];
++    [self setNeedsLayout];
++}
++
++- (void)editorPan:(UIPanGestureRecognizer *)pan {
++    CGPoint p = [pan locationInView:self];
++    if (pan.state == UIGestureRecognizerStateBegan) {
++        CGPoint delta = [pan translationInView:self];
++        CGPoint start = CGPointMake(p.x - delta.x, p.y - delta.y);
++        _editedControl = _draggedControl = [self editorControlAt:start];
++        if (_draggedControl >= 0) {
++            CGPoint center = [self editorCenter:_draggedControl];
++            _dragOffset = CGPointMake(center.x - start.x, center.y - start.y);
++        }
++        [self setNeedsLayout];
++    }
++    if (_draggedControl < 0) return;
++    if (pan.state == UIGestureRecognizerStateCancelled || pan.state == UIGestureRecognizerStateFailed) {
++        _draggedControl = -1;
++        return;
++    }
++    CGRect safe = self.safe;
++    if (!CGRectIsEmpty(safe)) {
++        CGFloat x = clamp((p.x + _dragOffset.x - CGRectGetMinX(safe)) / safe.size.width, 0, 1);
++        CGFloat y = clamp((p.y + _dragOffset.y - CGRectGetMinY(safe)) / safe.size.height, 0, 1);
++        NSString *key = placementKey(_draggedControl);
++        NSMutableDictionary *placement = [_customPad[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++        placement[@"x"] = @(x);
++        placement[@"y"] = @(y);
++        _customPad[key] = placement;
++        [self setNeedsLayout];
++    }
++    if (pan.state == UIGestureRecognizerStateEnded) _draggedControl = -1;
++}
++
++- (void)resizeEditedControl:(CGFloat)change {
++    if (_editedControl < 0) return;
++    NSString *key = placementKey(_editedControl);
++    NSMutableDictionary *placement = [_customPad[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++    placement[@"scale"] = @(clamp([self styleScale:_editedControl] + change, 0.65, 1.6));
++    _customPad[key] = placement;
++    [self setNeedsLayout];
++}
++
++- (void)changeEditedOpacity:(CGFloat)delta {
++    if (_editedControl < 0) return;
++    NSString *key = placementKey(_editedControl);
++    NSMutableDictionary *placement = [_customPad[key] mutableCopy] ?: [NSMutableDictionary dictionary];
++    placement[@"opacity"] = @(clamp([self styleOpacity:_editedControl] + delta, 0.2, 1));
++    _customPad[key] = placement;
++    [self refresh];
+ }
++- (void)editorFade { [self changeEditedOpacity:-0.1]; }
++- (void)editorBrighten { [self changeEditedOpacity:0.1]; }
++
++- (void)editorShrink { [self resizeEditedControl:-0.1]; }
++- (void)editorGrow { [self resizeEditedControl:0.1]; }
++- (void)editorReset { [_customPad removeAllObjects]; _editedControl = -1; [self setNeedsLayout]; }
++- (void)editorCancel { [self closePadEditor:NO]; }
++- (void)editorSave { [self closePadEditor:YES]; }
++
++- (void)closePadEditor:(BOOL)save {
++    if (save) [NSUserDefaults.standardUserDefaults setObject:_customPad forKey:k_custom_key];
++    else _customPad = [[NSUserDefaults.standardUserDefaults dictionaryForKey:k_custom_key] mutableCopy]
++        ?: [NSMutableDictionary dictionary];
++    [_padEditor removeFromSuperview];
++    _padEditor = nil;
++    _editorBar = nil;
++    _editorSelection = nil;
++    _editorSmaller = _editorLarger = _editorFainter = _editorBrighter = nil;
++    [_transientGear setEditing:NO];
++    [self applyLayout];
++    [self setNeedsLayout];
++}
++
++
+ - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
+ - (void)refresh {   // pressed state → fill or a lit glyph, sticks → knob position
+     uint64_t all = _faceBits | _dpadBits | _btnBits;
+@@ -734,12 +1025,15 @@ static void placeLabelAt(CATextLayer *t, CGPoint c, CGFloat fs, CGFloat dy) { pl
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+     for (int b = 0; b < B_N; b++) { BOOL lit = (all >> b) & 1;
+         _key[b].fillColor = (lit ? on : idle).CGColor; _key[b].strokeColor = line.CGColor; _label[b].foregroundColor = (lit ? textOn : text).CGColor;
++        CGFloat opacity = [self styleOpacity:b];
++        _key[b].opacity = _label[b].opacity = opacity;
+         if (_art[b]) {   // a picture cannot take a fill: a press brightens it and pulls it in
+-            _art[b].opacity = lit ? K_STYLE_LIT : K_STYLE_IDLE;
++            _art[b].opacity = (lit ? K_STYLE_LIT : K_STYLE_IDLE) * opacity;
+             CGFloat s = lit ? K_STYLE_PRESS : 1;
+             _art[b].transform = CATransform3DMakeScale(s, s, 1); } }
+     CGPoint h = self.stickHome, o = [self knobOffset:0];
+     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? on : idle).CGColor; _knob.strokeColor = line.CGColor;
++    _ring.opacity = _knob.opacity = [self styleOpacity:B_MOVE_STICK];
+     _ring.strokeColor = line.CGColor;
+     CAShapeLayer *inner = (CAShapeLayer *)_knob.sublayers.firstObject; inner.strokeColor = line.CGColor;
+     [CATransaction commit];
+@@ -836,7 +1130,7 @@ static BOOL pads_slotted(GCController *gone) {
+     GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
+     if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
+     BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
+-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any || self->_hidden; [self reset]; });   // the touch gamepad hides while any controller is in use
++    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = !self->_padEditor && (any || self->_hidden); [self reset]; });   // the touch gamepad hides while any controller is in use
+ }
+ @end
+ 
+@@ -935,6 +1229,9 @@ UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWi
+ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
+ void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
+ void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
++void dm_pad_edit_start(void) { [g_view startPadEditor]; }
++bool dm_gear_auto_hide(void) { return [g_view gearHidesAutomatically]; }
++void dm_gear_set_auto_hide(bool enabled) { [g_view setGearHidesAutomatically:enabled]; }
+ int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
+ bool dm_pad_layout_offered(int layout) {
+     return layout == 0 || layout == 1 || (layout == 2 && dm_opmode() == 0) ||
+diff --git a/dm/ios/Sources/DmTransientGear.inc b/dm/ios/Sources/DmTransientGear.inc
+new file mode 100644
+index 0000000..e48730b
+--- /dev/null
++++ b/dm/ios/Sources/DmTransientGear.inc
+@@ -0,0 +1,72 @@
++// UIKit-only gear visibility. Gamepad touch handling remains independent.
++@interface DmTransientGear : NSObject
++@property(nonatomic, readonly, getter=isAutomatic) BOOL automatic;
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button;
++- (void)setAutomatic:(BOOL)automatic;
++- (void)setEditing:(BOOL)editing;
++@end
++
++@implementation DmTransientGear {
++    __weak UIButton *_button;
++    UITapGestureRecognizer *_tap;
++    NSTimer *_hideTimer;
++    BOOL _automatic, _revealed, _editing;
++}
++static NSString *const k_transientGearKey = @"DmTransientGearV1";
++
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button {
++    if ((self = [super init])) {
++        _button = button;
++        _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(screenTapped:)];
++        _tap.cancelsTouchesInView = NO;
++        _tap.delaysTouchesBegan = NO;
++        _tap.delaysTouchesEnded = NO;
++        _tap.requiresExclusiveTouchType = NO;
++        [pad addGestureRecognizer:_tap];
++        _automatic = [NSUserDefaults.standardUserDefaults boolForKey:k_transientGearKey];
++        [self updateVisibility];
++    }
++    return self;
++}
++- (BOOL)isAutomatic { return _automatic; }
++- (void)updateVisibility {
++    _tap.enabled = _automatic && !_editing;
++    _button.hidden = _editing || (_automatic && !_revealed);
++}
++- (void)showTemporarily {
++    if (!_automatic || _editing) return;
++    [_hideTimer invalidate];
++    _revealed = YES;
++    [self updateVisibility];
++    __weak DmTransientGear *weakGear = self;
++    _hideTimer = [NSTimer timerWithTimeInterval:3.0 repeats:NO block:^(NSTimer *timer) {
++        DmTransientGear *gear = weakGear;
++        if (!gear || timer != gear->_hideTimer) return;
++        gear->_hideTimer = nil;
++        gear->_revealed = NO;
++        [gear updateVisibility];
++    }];
++    [NSRunLoop.mainRunLoop addTimer:_hideTimer forMode:NSRunLoopCommonModes];
++}
++- (void)screenTapped:(UITapGestureRecognizer *)recognizer {
++    if (recognizer.state == UIGestureRecognizerStateRecognized) [self showTemporarily];
++}
++- (void)setAutomatic:(BOOL)automatic {
++    _automatic = automatic;
++    [NSUserDefaults.standardUserDefaults setBool:automatic forKey:k_transientGearKey];
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    if (automatic && !_editing) [self showTemporarily];
++    else [self updateVisibility];
++}
++- (void)setEditing:(BOOL)editing {
++    _editing = editing;
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    [self updateVisibility];
++    if (!editing) [self showTemporarily];
++}
++- (void)dealloc { [_hideTimer invalidate]; }
++@end
+diff --git a/dm/ios/Sources/GameMenu.swift b/dm/ios/Sources/GameMenu.swift
+index 80bd37b..b6bdc8a 100644
+--- a/dm/ios/Sources/GameMenu.swift
++++ b/dm/ios/Sources/GameMenu.swift
+@@ -19,17 +19,26 @@ private func gameMenuItems() -> [UIMenuElement] {
+         UIAction(title: names[l], state: dm_pad_layout() == l ? .on : .off) { _ in dm_pad_layout_set(Int32(l)) }
+     }
+     let layout = UIMenu(title: "按键布局", options: .singleSelection, children: layouts)   // a choice's value shows in its submenu: a subtitle would make each row two lines
++    let editLayout = UIAction(title: "自定义按键", image: UIImage(systemName: "move.3d")) { _ in
++        dm_pad_edit_start()
++    }
++    let touchSettings: [UIMenuElement]
++    let hideGear = UIAction(title: "设置键自动隐藏", image: UIImage(systemName: "gearshape"),
++                            state: dm_gear_auto_hide() ? .on : .off) { _ in
++        dm_gear_set_auto_hide(!dm_gear_auto_hide())
++    }
++    touchSettings = dm_pad_layout() == 3 ? [layout, editLayout, hideGear] : [layout, hideGear]
+     var items: [UIMenuElement] = []
+     var placed = false
+     if let m = gameMenuModel {
+         for section in m.sections {
+-            var rows: [UIMenuElement] = section == "Controls" ? [layout] : []
++            var rows: [UIMenuElement] = section == "Controls" ? touchSettings : []
+             if section == "Controls" { placed = true }
+             for s in m.rows(in: section) where (s.kind == "choice" || s.kind == "toggle") && dm_setting_live(s.env, nil) { rows.append(gameMenuRow(m, s)) }
+             if !rows.isEmpty { items.append(UIMenu(options: .displayInline, children: rows)) }
+         }
+     }
+-    if !placed { items.insert(UIMenu(options: .displayInline, children: [layout]), at: 0) }
++    if !placed { items.insert(UIMenu(options: .displayInline, children: touchSettings), at: 0) }
+     return items
+ }
+ 
