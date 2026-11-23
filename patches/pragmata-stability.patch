@@ -1,0 +1,121 @@
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index dcd92e9..35fbba4 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -282,7 +282,7 @@ static _Atomic int g_up_pending;
+ static _Atomic int g_gpu_lost;
+ void front_gpu_lost(void);
+ __attribute__((weak)) void front_gpu_lost(void) { MDIE("GPU access revoked: macOS runs none of this process's GPU work any more"); }   // the Mac front end leaves full screen, says why and quits
+-static void gpu_lost_release(void) {
++static void gpu_publish_completed_fence(void) {
+     static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;   // never lower it
+     os_unfair_lock_lock(&lk); uint64_t f = atomic_load(&g_done); if (g_ev && g_ev.signaledValue < f) g_ev.signaledValue = f; os_unfair_lock_unlock(&lk);
+ }
+@@ -298,7 +298,7 @@ static void gpu_lost_check(NSError *e, const char *where) {
+     if (!e || atomic_load(&g_gpu_lost) || !gpu_err_has(e, MTL4CommandQueueErrorAccessRevoked, 0) || atomic_exchange(&g_gpu_lost, 1)) return;
+     MLOG("[RED] GPU access revoked: the %s command buffer was ignored (fences back %llu of %llu); macOS runs none of this process's GPU work any more, so the game stops", where,
+          (unsigned long long)atomic_load(&g_done), (unsigned long long)atomic_load(&g_fence));
+-    gpu_lost_release();
++    gpu_publish_completed_fence();
+     front_gpu_lost();
+ }
+ // DM_TEST_GPU_LOST=n (for testing): from the n-th submission on, imitate the revoked access without faulting the GPU: each submission's feedback reports it, in the shape the #1326
+@@ -1874,6 +1874,23 @@ static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc
+ // submission in pieces (nvn_queue.inc), a game makes many small ones a frame: Ocarina of Time's 28-37 took the pool's 8 about once a frame, and the submit thread waited for the
+ // GPU (PR #2090). ALLOC_SHARE bounds an allocator's memory while no frame ends (a loading screen): after that many submissions the next takes another
+ static _Atomic uint64_t g_cur_frame;
++// Called from the submit thread. Sample once per frame so the staging and
++// arena caches can react to Metal's budget without querying at every submission.
++static int gpu_cache_under_pressure(void) {
++#if TARGET_OS_IPHONE
++    static uint64_t checked = UINT64_MAX;
++    static int pressure;
++    uint64_t frame = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
++    if (frame != checked) {
++        checked = frame;
++        uint64_t budget = g_dev.recommendedMaxWorkingSetSize;
++        pressure = budget && g_dev.currentAllocatedSize >= budget - budget / 10;
++    }
++    return pressure;
++#else
++    return 0;
++#endif
++}
+ static uint64_t g_alloc_frame, g_alloc_shared, g_alloc_shares; static int g_alloc_used;   // the current allocator: the frame it was taken in, the submissions it has served since its reset; submissions that shared one so far
+ int mtl_wait(uint64_t fence, uint64_t timeout_ns);
+ static int mtl_wait_at(uint64_t fence, uint64_t timeout_ns, int site);
+@@ -3003,6 +3020,13 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
+     pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
+     nvn_queue_gpu_progress();
+ }
++// A failed commit can return its feedback without the queue executing its shared-event
++// signal. SyncWait may already be sleeping on that event. Publish the completed prefix
++// only after its CPU-side reports have landed, and keep recoverable errors on the same queue.
++static void post_feedback_complete(uint64_t fence, uint64_t c0, uint64_t c1, NSError *error) {
++    post_complete(fence, c0, c1);
++    if (error || atomic_load(&g_gpu_lost)) gpu_publish_completed_fence();
++}
+ static uint64_t g_sub_ready;   // mtl_sub_ready, for the submission being encoded
+ void mtl_sub_ready(uint64_t t) { g_sub_ready = t; }
+ static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
+@@ -3065,8 +3089,7 @@ uint64_t mtl_sub_commit(void) {
+         if (cb.error) { atomic_store(&g_last_commit_error, 1); res_top_once(cb.error); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("[RED] command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("[RED] state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("[RED] command buffer execution error: %s", cb.error.localizedDescription.UTF8String); }
+         char where[64]; snprintf(where, sizeof where, "fence %llu, its last command buffer", (unsigned long long)fence); cbs_feedback(cbs, cb.error, where);
+         gpu_lost_check(lost_test ? gpu_lost_test_error() : cb.error, "submission");
+-        post_complete(fence, c0, c1);
+-        if (atomic_load(&g_gpu_lost)) gpu_lost_release();   // the GPU signals none of these fences
++        post_feedback_complete(fence, c0, c1, cb.error);
+         defer_drain(); defer_idle_commit();
+     }];
+     void arena_commit(uint64_t fence); arena_commit(fence);
+@@ -3672,8 +3695,13 @@ static void up_idle_release(void) {
+             age->window_ns = now;
+         }
+     }
+-    // Commit the removals before this submission can allocate more GPU memory.
+-    if (g_up_idle_n != before) res_commit();
++    // An idle slot has no GPU users. The residency queue retains the retired
++    // allocations until their removal is committed. Under memory pressure,
++    // release them before the next submission can allocate more staging.
++    if (g_up_idle_n != before) {
++        if (TARGET_OS_IPHONE && !gpu_cache_under_pressure()) res_commit_async(nil);
++        else res_commit();
++    }
+     static uint64_t said_ns;
+     if (!said_ns || now - said_ns >= 30000000000ull || (!before && g_up_idle_n)) {
+         said_ns = now;
+@@ -8385,7 +8413,9 @@ static unsigned arena_trim(uint64_t idle) {
+ void arena_begin(void) {
+     if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; }
+     g_cur_arena = nil;
+-    arena_trim(ARENA_IDLE);
++    // At the budget, shorten the idle age for excess scratch. arena_trim
++    // still keeps pending fences and the small reuse pool untouched.
++    arena_trim(arena_trim_on() && gpu_cache_under_pressure() ? ARENA_IDLE / 4 : ARENA_IDLE);
+     if (g_arena_next) { NvArena *a = g_arena_next; g_arena_next = nil; [g_arenas removeObjectIdenticalTo:a]; [g_sub_arenas addObject:a]; g_cur_arena = a; }
+ }
+ void arena_commit(uint64_t fence) {
+diff --git a/dm/gfx/tests/t_gpu_lost.m b/dm/gfx/tests/t_gpu_lost.m
+index 8f480ec..1427e5b 100644
+--- a/dm/gfx/tests/t_gpu_lost.m
++++ b/dm/gfx/tests/t_gpu_lost.m
+@@ -52,6 +52,19 @@ int main(void) { @autoreleasepool {
+     CHECK("submissions before run as before", ok && !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls) && !mtl_last_commit_error());
+     CHECK("a present before asks for the layer", present_asks(&pic) == 1);
+ 
++    // Model a recoverable command-buffer error with an omitted GPU signal. Feedback
++    // is the only completion for this empty submission; no fault is sent to Metal.
++    uint64_t recoverable = ++g_fence;
++    post_rec *pending = &g_postr[recoverable % POST_RING];
++    atomic_store(&pending->claimed, 0);
++    atomic_store(&pending->fence, recoverable);
++    CHECK("the shared event still precedes the errored submission", g_ev.signaledValue < recoverable);
++    NSError *fault = nested(mtl4, MTL4CommandQueueErrorTimeout, nested(iogpu, 11, nil));
++    post_feedback_complete(recoverable, 0, 0, fault);
++    CHECK("recoverable feedback wakes the shared-event path", g_ev.signaledValue >= recoverable);
++    CHECK("CPU-side completion landed before the signal", pending->claimed && mtl_completed_fence() == recoverable);
++    CHECK("recoverable feedback does not revoke GPU access", !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls));
++
+     f = submit_wait(&ok, &ms);
+     printf("submission %llu (revoked): SyncWait %s in %.1f ms, shared event at %llu\n", (unsigned long long)f, ok ? "returned" : "timed out", ms, (unsigned long long)g_ev.signaledValue);
+     CHECK("the front end is told", atomic_load(&g_gpu_lost) && atomic_load(&test_gpu_lost_calls) == 1);
