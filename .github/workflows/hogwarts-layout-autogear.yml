@@ -1,0 +1,68 @@
+# nxnative's iOS app for one game with placeholder module sections (ci/build_shell.py): no game files, keys or game-derived data.
+# The layout input holds only numbers and IDs (module sizes and offsets, the derived game.tsv with build IDs and display version).
+name: Hogwarts layout and auto-hide gear
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/hogwarts-layout-autogear.yml']
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer   # nxnative's toolchain (README: Xcode 27.2), as its own CI names it
+
+jobs:
+  shell:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: seedds/nxnative
+          ref: f3ec8fc81e49744d178379a38ceae0fc1cba04d0
+          path: nxnative
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
+          command -v xcodegen || brew install xcodegen
+          python3 -m pip install fonttools
+      - name: Apply the existing game host and the new touch controls
+        run: |
+          base64 --decode < ci/patches/hogwarts-layout-autogear.patch.gz.b64 | gzip -dc > "$RUNNER_TEMP/hogwarts-layout.patch"
+          git -C nxnative apply --check --whitespace=nowarn "$RUNNER_TEMP/hogwarts-layout.patch"
+          git -C nxnative apply --whitespace=nowarn "$RUNNER_TEMP/hogwarts-layout.patch"
+      - name: Layout
+        env:
+          LAYOUT: eyJnYW1lIjogIjAxMDBGN0UwMEM3MEUwMDAiLCAiZ2FtZV90c3YiOiAibW9kdWxlc1x0bWFpbiBzdWJzZGswIHNka1xubWVtX3Jlc2VydmVcdDB4RjAwMDAwMDBcbm1lbV9hbGlhc1x0MHhDODAwMDAwMFxubWVtX3N0YWNrXHQweDEwMDAwMDAwXG5hcHBfcG9vbFx0MHhDRDUwMDAwMFxuc3lzX3Jlc291cmNlXHQweDEwMDAwMDBcbnNoYWRlcl9ncm91cHNcdFNoYWRlckFyY2hpdmUtR2xvYmFsLT1nbG9iYWwgU2hhZGVyQXJjaGl2ZS09Z2FtZVxudGl0bGVfaWRcdDAxMDBGN0UwMEM3MEUwMDBcbnByb2dyYW1faWRcdDAxMDBGN0UwMEM3MEUwMDBcbm5hbWVcdEhvZ3dhcnRzIExlZ2FjeVxuaXBhXHRIb2d3YXJ0c0xlZ2FjeS5pcGFcbmFwcF9jYXRlZ29yeVx0cHVibGljLmFwcC1jYXRlZ29yeS5nYW1lc1xucm9tZnNfbWFya2VyXHRQaG9lbml4L0NvbnRlbnQvUGFrcy9wYWtjaHVuazAtU3dpdGNoLnBha1xuZGlzcGxheV92ZXJzaW9uXHQxLjAuNVxuYnVpbGRcdHYzMjc2ODBcdDEuMC41XHRtYWluPTBjMDBmYzM3YjA2MTBmYmRiMmNmNzNhZWQwY2M3M2U3XHRzZGs9MWVhMGI5ZmU2Y2Q2ODY3YjE4ZTM3NGE1ZDUzZDc5NTBcdHN1YnNkazA9ZDBjNDhlZWY2ZGMyZjFlN2FjOGI4ZGQ1YjViMDNhNjBcdHJ0bGQ9NjlkZDAzNzg3YjUyYjA3NTE2NWE5NTJlZTc0ZWJlNmJcbnBhZF9sYXlvdXRcdHN0eWxlXG50ZXhfZHluX3Nsb3RzXHRvblxudGV4X2ZsdXNoX3VwbG9hZFx0b25cbnRleF9kaXJ0eV91cGxvYWRcdG9uXG5wcmVzZW50X2ludGVydmFsXHRkaXNwbGF5XG5zaGFkZXJfbm90ZVx0SG9nd2FydHMgTGVnYWN5IChVbnJlYWwgRW5naW5lIDQuMjcuMiwgcHJvamVjdCBQaG9lbml4KSBzaGFkZXJzOiB0aGUgdHdvIGRlY29kZWQgc2hhZGVyIGNvZGUgYXJjaGl2ZXMsIHdob3NlIGV2ZXJ5IHJlY29yZCBpcyBhbiBMU0xHIG9mIG9uZSBzdGFnZTsgdGhlIGVuZ2luZSBjb21iaW5lcyB2ZXJ0ZXggYW5kIHBpeGVsIHNoYWRlcnMgcGVyIGRyYXcgZnJvbSBpdHMgcGlwZWxpbmUgc3RhdGUsIHNvIHRoZXkgcGFpciB0aHJvdWdoIHNlcGFyYWJsZV9wYWlyc1xucGFja2FnZVx0djMyNzY4MFxuc2hhZGVyX3ZlcnNpb25zXHR2MzI3NjgwXG4iLCAiZGlzcGxheV9uYW1lIjogIumcjeagvOayg+iMqOS5i+mBlyIsICJ2ZXJzaW9uIjogIjEuMC41IiwgImxhbmd1YWdlIjogInpoLUhhbnMiLCAibW9kdWxlcyI6IFt7Im5hbWUiOiAibWFpbiIsICJzaXplIjogMTYwNDA2MDY0LCAiaGVhZGVyIjogeyJQQVRDSF9PRkYiOiAiLTB4NzUwMDAwIiwgIktFWV9QQUdFX09GRiI6ICIweGI1NDQwMDAiLCAiS0VZX1BBR0VfU0laRSI6ICIweDQwMDAiLCAiVEVYVF9FTkQiOiAiMHg3ODk2NjkwIiwgIklNQUdFX1NJWkUiOiAiMHhiNTQ4MDAwIiwgIkZJTEVfSU1BR0VfTEVOIjogIjB4OTUxMDAwMCJ9fSwgeyJuYW1lIjogInN1YnNkazAiLCAic2l6ZSI6IDcyNjY2MDgsICJoZWFkZXIiOiB7IlBBVENIX09GRiI6ICIweDY5MDAwMCIsICJLRVlfUEFHRV9PRkYiOiAiMHg2ODAwMDAiLCAiS0VZX1BBR0VfU0laRSI6ICIweDQwMDAiLCAiVEVYVF9FTkQiOiAiMHgzNTA2YTAifX0sIHsibmFtZSI6ICJzZGsiLCAic2l6ZSI6IDEzMTAzMTEyLCAiaGVhZGVyIjogeyJQQVRDSF9PRkYiOiAiMHhiZjAwMDAiLCAiS0VZX1BBR0VfT0ZGIjogIjB4YmU4MDAwIiwgIktFWV9QQUdFX1NJWkUiOiAiMHg0MDAwIiwgIlRFWFRfRU5EIjogIjB4NWU3NzgwIn19XX0=
+        run: |
+          echo "$LAYOUT" | base64 --decode > "$RUNNER_TEMP/layout.json"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k: v for k, v in d.items() if k != "game_tsv"}, indent=1)); print(d.get("game_tsv", ""))' "$RUNNER_TEMP/layout.json"
+      - name: Build the app
+        run: python3 ci/ci/build_shell.py --repo nxnative --layout "$RUNNER_TEMP/layout.json" --output "$RUNNER_TEMP/shell"
+      - name: Archive
+        run: |
+          cd "$RUNNER_TEMP/shell/out"
+          ditto -c -k --sequesterRsrc --keepParent DmIOS.app "$GITHUB_WORKSPACE/DmIOS-shell.zip"
+          cp shell.json "$GITHUB_WORKSPACE/shell.json"
+          ls -la "$GITHUB_WORKSPACE"/DmIOS-shell.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Hogwarts layout and auto-hide gear
+          path: |
+            DmIOS-shell.zip
+            shell.json
+          retention-days: 30
+
