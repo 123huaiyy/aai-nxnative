@@ -96,13 +96,23 @@ index dcd92e9..35fbba4 100644
  }
  void arena_commit(uint64_t fence) {
 diff --git a/dm/gfx/tests/t_gpu_lost.m b/dm/gfx/tests/t_gpu_lost.m
-index 8f480ec..1427e5b 100644
+index 8f480ec..337fb1e 100644
 --- a/dm/gfx/tests/t_gpu_lost.m
 +++ b/dm/gfx/tests/t_gpu_lost.m
-@@ -52,6 +52,19 @@ int main(void) { @autoreleasepool {
-     CHECK("submissions before run as before", ok && !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls) && !mtl_last_commit_error());
-     CHECK("a present before asks for the layer", present_asks(&pic) == 1);
- 
+@@ -33,7 +33,43 @@ static tex_t picture(void) {
+     // NOLINTEND(clang-analyzer-osx.cocoa.RetainCount)
+ }
+ static int present_asks(const tex_t *t) { int before = atomic_load(&g_layer_asks); mtl_present_wait(mtl_present(t, 1. / 60, NULL, NULL)); return atomic_load(&g_layer_asks) - before; }
+-int main(void) { @autoreleasepool {
++// Holds the CPU-visible event value without creating a Metal device. The
++// virtual CI runner can still check the real feedback/completion code path.
++@interface TestFenceEvent : NSObject
++@property(nonatomic) uint64_t signaledValue;
++@end
++@implementation TestFenceEvent
++@end
++
++static void recoverable_feedback(NSString *mtl4, NSString *iogpu) {
 +    // Model a recoverable command-buffer error with an omitted GPU signal. Feedback
 +    // is the only completion for this empty submission; no fault is sent to Metal.
 +    uint64_t recoverable = ++g_fence;
@@ -115,6 +125,30 @@ index 8f480ec..1427e5b 100644
 +    CHECK("recoverable feedback wakes the shared-event path", g_ev.signaledValue >= recoverable);
 +    CHECK("CPU-side completion landed before the signal", pending->claimed && mtl_completed_fence() == recoverable);
 +    CHECK("recoverable feedback does not revoke GPU access", !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls));
++}
++
++int main(int argc, char **argv) { @autoreleasepool {
++    if (argc == 2 && !strcmp(argv[1], "--check-device"))
++        return ![MTLCreateSystemDefaultDevice() supportsFamily:MTLGPUFamilyMetal4];
++    if (argc == 2 && !strcmp(argv[1], "--feedback-only")) {
++        TestFenceEvent *event = [TestFenceEvent new];
++        g_ev = (id<MTLSharedEvent>)event;
++        recoverable_feedback(MTL4CommandQueueErrorDomain, @"IOGPUCommandQueueErrorDomain");
++        uint64_t completed = mtl_completed_fence();
++        event.signaledValue = completed + 1;
++        gpu_publish_completed_fence();
++        CHECK("CPU publication never lowers the shared event", event.signaledValue == completed + 1);
++        printf("t_gpu_lost --feedback-only: %d checks, %d failed\n", checks, failed);
++        return failed != 0;
++    }
+     alarm(60); setvbuf(stdout, NULL, _IONBF, 0);
+     setenv("DM_TEST_GPU_LOST", "3", 1);
+     setenv("DM_PRESENT_LINK", "0", 1); setenv("DM_PRESENT_SNAP", "0", 1);   // presents on the present thread, straight from the game's texture
+@@ -52,6 +88,8 @@ int main(void) { @autoreleasepool {
+     CHECK("submissions before run as before", ok && !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls) && !mtl_last_commit_error());
+     CHECK("a present before asks for the layer", present_asks(&pic) == 1);
+ 
++    recoverable_feedback(mtl4, iogpu);
 +
      f = submit_wait(&ok, &ms);
      printf("submission %llu (revoked): SyncWait %s in %.1f ms, shared event at %llu\n", (unsigned long long)f, ok ? "returned" : "timed out", ms, (unsigned long long)g_ev.signaledValue);

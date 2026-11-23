@@ -58,8 +58,16 @@ jobs:
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k: v for k, v in d.items() if k != "game_tsv"}, indent=1)); print(d.get("game_tsv", ""))' "$RUNNER_TEMP/layout.json"
       - name: Build the app
         run: python3 ci/ci/build_shell.py --repo nxnative --layout "$RUNNER_TEMP/layout.json" --output "$RUNNER_TEMP/shell"
-      - name: Verify GPU completion and arena retirement on Metal
-        run: make -C nxnative/dm/gfx/tests GAME=0400C76024710000 check_t_gpu_lost check_t_arena_trim
+      - name: Compile GPU tests and check CPU feedback
+        working-directory: nxnative/dm/gfx/tests
+        run: |
+          make GAME=0400C76024710000 t_gpu_lost t_arena_trim
+          ./t_gpu_lost --feedback-only
+          if ./t_gpu_lost --check-device; then
+            make GAME=0400C76024710000 check_t_gpu_lost check_t_arena_trim
+          else
+            echo "::notice::The virtual runner has no Metal 4 device. GPU execution remains untested."
+          fi
       - name: Archive
         run: |
           cd "$RUNNER_TEMP/shell/out"
