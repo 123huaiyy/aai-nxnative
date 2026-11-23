@@ -1,7 +1,9 @@
 name: Rise A15 touch layout
 on:
+  workflow_dispatch:
   push:
-    branches: [codex/mhr-a15-experimental-20261118]
+    branches: [main]
+    paths: ['.github/workflows/rise-a15-layout.yml']
 permissions:
   contents: read
 env:

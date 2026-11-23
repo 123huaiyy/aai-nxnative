@@ -1,7 +1,9 @@
 name: MHGU adaptive touch layout
 on:
+  workflow_dispatch:
   push:
-    branches: [ codex/mhgu-controller-fix-20261117 ]
+    branches: [main]
+    paths: ['.github/workflows/mhgu-adaptive-layout.yml']
 
 jobs:
   build:

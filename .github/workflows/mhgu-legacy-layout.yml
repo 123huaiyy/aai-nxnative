@@ -1,7 +1,9 @@
 name: MHGU legacy touch layout
 on:
+  workflow_dispatch:
   push:
-    branches: [ codex/mhgu-legacy-padfix-20261117 ]
+    branches: [main]
+    paths: ['.github/workflows/mhgu-legacy-layout.yml']
 
 jobs:
   build:
