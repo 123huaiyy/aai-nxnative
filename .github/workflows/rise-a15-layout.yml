@@ -1,0 +1,66 @@
+name: Rise A15 touch layout
+on:
+  push:
+    branches: [codex/mhr-a15-experimental-20261118]
+permissions:
+  contents: read
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+jobs:
+  compile:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: ci
+          ref: 86a095646b7a3f0904ef47adb74b625c5e5be92f
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: layout-update
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: seedds/nxnative
+          ref: f3ec8fc81e49744d178379a38ceae0fc1cba04d0
+          path: nxnative
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.14'
+      - name: Prepare toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          command -v xcodegen || brew install xcodegen
+          python3 -m pip install fonttools
+      - name: Apply changes and test decoder
+        run: |
+          git -C nxnative apply "$GITHUB_WORKSPACE/ci/mhr-oldchips/changes.patch"
+          git -C nxnative apply --check "$GITHUB_WORKSPACE/layout-update/patches/rise-a15-layout.patch"
+          git -C nxnative apply "$GITHUB_WORKSPACE/layout-update/patches/rise-a15-layout.patch"
+          make -C nxnative/dm/gfx/tex/tests t_bc_decode t_bc_texture
+          nxnative/dm/gfx/tex/tests/t_bc_decode
+          nxnative/dm/gfx/tex/tests/t_bc_texture
+      - name: Test classic Metal render-pass conversion
+        run: |
+          xcrun --sdk macosx clang -fobjc-arc -Wall -Wextra -framework Metal -framework Foundation nxnative/dm/gfx/nvn/nvn_legacy_pass.m nxnative/dm/gfx/tests/t_legacy_pass.m -o "$RUNNER_TEMP/legacy_pass_test"
+          "$RUNNER_TEMP/legacy_pass_test"
+      - name: Enable experimental code for compilation only
+        run: |
+          python3 -c 'from pathlib import Path; p=Path("nxnative/dm/ios/project.yml"); s=p.read_text(); p.write_text(s.replace("OTHER_CFLAGS: $(inherited) -mcpu=apple-m1", "OTHER_CFLAGS: $(inherited) -DDM_EXPERIMENT_BC_SOFT=1 -mcpu=apple-m1"))'
+      - name: Compile iOS shell (not a playable app)
+        run: python3 ci/ci/build_shell.py --repo nxnative --layout ci/mhr-oldchips/layout.json --output "$RUNNER_TEMP/shell"
+      - name: Archive shell for local game assembly
+        run: |
+          cd "$RUNNER_TEMP/shell/out"
+          ditto -c -k --sequesterRsrc --keepParent DmIOS.app "$GITHUB_WORKSPACE/DmIOS-shell.zip"
+          cp shell.json "$GITHUB_WORKSPACE/shell.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: legacy-rise-a15-layout
+          path: |
+            DmIOS-shell.zip
+            shell.json
+          retention-days: 7
