@@ -1,0 +1,593 @@
+diff --git a/dm/games/0400C76024710000/README.md b/dm/games/0400C76024710000/README.md
+index 8de601d..9f8682f 100644
+--- a/dm/games/0400C76024710000/README.md
++++ b/dm/games/0400C76024710000/README.md
+@@ -2,6 +2,60 @@
+ 
+ A Switch 2 game: update v196608, SDK 20.5.15 built for the Switch 2 (`Ounce`), NVN2. Capcom's RE Engine, with Havok and Wwise. Modules `main` and `sdk`; `subsdk0` and `subsdk1` (C / libc) are not loaded. It plays on the Mac: the title, a new game's intro (the ship, the tower and the lunar base; last run on chain `79939b004bb5`) and, with the save those runs left, walking through the station's first rooms (chain `d24f05cf9d78`). Tested on an M4 Pro (48 GB) only.
+ 
++## iOS stability candidate
++
++A submission can finish on the CPU feedback path after a Metal error while the
++guest is waiting for a shared-event signal the queue did not execute. The host
++now publishes only the completed fence prefix, after its CPU-side reports land.
++The synthetic regression leaves the GPU signal absent and verifies that an
++ordinary fault wakes the wait path without revoking access.
++
++On iOS, near Metal's recommended working-set size, the completed scratch
++arenas above the existing reuse pool are eligible for retirement sooner.
++In-flight arenas retain the original fence protection. Outside that pressure
++range, the residency worker can apply the removals of idle upload staging
++allocations. The submit thread still applies them synchronously under pressure.
++The estimate is refreshed during loading even when submissions keep arriving
++without a new frame. Physical memory use during long sessions on 8 GB devices
++remains unverified.
++
++Tessellation without a geometry stage now depends only on the expansion
++pipeline. A failure to build the geometry-count pipeline is logged separately
++and only prevents replay when the draw has that stage. Whether this is behind
++any missing geometry in PRAGMATA remains open.
++
++The shader library and game build are unchanged. The absolute memory minimum,
++the opening movie's address fault, skipped tessellated draws and the cost of
++live streaming are open. Compare the same route with `DM_MEMSTAT=memstat.tsv`
++for resident memory and `DM_NVN_WAITS=1` for CPU waits. Inspect the first failed
++command buffer and the first tessellation refusal in `Documents/log.txt` before
++changing texture or shader behaviour.
++
++## iOS frame-time candidate
++
++- The A19 Pro capture recorded 638–1,113 ms per dirty-page census with
++  72.9–74.8 GiB free and 40.62 GiB of backing files. The disk watchdog can
++  skip this count when the entire backing range would still leave the
++  warning margin. It resumes the count as soon as that bound no longer
++  holds. This removes the timed census work on that capture's disk budget;
++  its effect on presented frame times still needs a replay.
++
++- [Raw pool table updates at command-buffer seal](../../../docs/reference/shaders.md#raw-pool-table-words-that-predate-the-pools) reduce repeated table builds and residency commits during streaming. The shader library is shared with the stability build.
++- The A19 Pro capture with `DM_NVN_GPUPROF=every:15` and `DM_NVN_PASSDUMP=every:30` associates the slow compute encoders with the SDF queue. At frame 1785, the encoder after pass 56538 took 243.1 ms out of 273.0 ms from first GPU timestamp to last. The pass dump records `251426e9d44fd558` (128 groups with 32 threads each) between the game's `0x821` barriers. At frames 1755 and 1845, the encoders after passes 53348 and 63004 took 263.5 and 299.5 ms and include `a39d5e8748386dea`. These are encoder timings, which cover multiple dispatches. The same run reports cap hits for both shaders and for `8c48c7ffd257c63d`.
++- The translated libraries for all three use a read-modify-write on word 513 of the storage buffer bound at push offset `0x120` to inspect the shared counter, and also update it from the kernel. The capture does not show the counter's value at the failing exit checks. It reports a recovered GPU page fault at frame 1004, before the long SDF bursts; a causal link is unverified. The queue mismatch in [#2664](https://github.com/seedds/nxnative/issues/2664) remains open.
++
++The iOS build uses 32 workgroups for only the direct
++128 × 1 × 1 dispatches of these three 32-lane workers, on shader chain
++`63853cc4c4e3`. `DM_PRAGMATA_SDF_GROUPS=128` restores the guest grid. Values
++16 and 64 are also accepted. The emitted functions
++use the lane or local invocation ID, claim tasks through storage atomics,
++and have no grid-position input or dispatch-dimension driver reads. Their
++queue logic and compiled code stay the same.
++Compare the same route with both group counts. Check the loop hits, the
++duration of the affected encoders, and the image, especially effects and
++geometry that read the queue results. Real-device output equivalence and
++any speedup remain open.
++
+ ## What it needs
+ 
+ | Setting | Where | Why |
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index dcd92e9..adfcef3 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -282,7 +282,7 @@ static _Atomic int g_up_pending;
+ static _Atomic int g_gpu_lost;
+ void front_gpu_lost(void);
+ __attribute__((weak)) void front_gpu_lost(void) { MDIE("GPU access revoked: macOS runs none of this process's GPU work any more"); }   // the Mac front end leaves full screen, says why and quits
+-static void gpu_lost_release(void) {
++static void gpu_publish_completed_fence(void) {
+     static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;   // never lower it
+     os_unfair_lock_lock(&lk); uint64_t f = atomic_load(&g_done); if (g_ev && g_ev.signaledValue < f) g_ev.signaledValue = f; os_unfair_lock_unlock(&lk);
+ }
+@@ -298,7 +298,7 @@ static void gpu_lost_check(NSError *e, const char *where) {
+     if (!e || atomic_load(&g_gpu_lost) || !gpu_err_has(e, MTL4CommandQueueErrorAccessRevoked, 0) || atomic_exchange(&g_gpu_lost, 1)) return;
+     MLOG("[RED] GPU access revoked: the %s command buffer was ignored (fences back %llu of %llu); macOS runs none of this process's GPU work any more, so the game stops", where,
+          (unsigned long long)atomic_load(&g_done), (unsigned long long)atomic_load(&g_fence));
+-    gpu_lost_release();
++    gpu_publish_completed_fence();
+     front_gpu_lost();
+ }
+ // DM_TEST_GPU_LOST=n (for testing): from the n-th submission on, imitate the revoked access without faulting the GPU: each submission's feedback reports it, in the shape the #1326
+@@ -1874,6 +1874,25 @@ static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc
+ // submission in pieces (nvn_queue.inc), a game makes many small ones a frame: Ocarina of Time's 28-37 took the pool's 8 about once a frame, and the submit thread waited for the
+ // GPU (PR #2090). ALLOC_SHARE bounds an allocator's memory while no frame ends (a loading screen): after that many submissions the next takes another
+ static _Atomic uint64_t g_cur_frame;
++// The submit thread can keep allocating during loading without advancing the
++// frame number. Refresh a stale sample even while replay stays on one frame.
++static int gpu_cache_under_pressure(void) {
++#if TARGET_OS_IPHONE
++    static uint64_t checked_frame = UINT64_MAX, checked_ns;
++    static int pressure;
++    uint64_t frame = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
++    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    if (frame != checked_frame || now - checked_ns >= 100000000ull) {
++        checked_frame = frame;
++        checked_ns = now;
++        uint64_t budget = g_dev.recommendedMaxWorkingSetSize;
++        pressure = budget && g_dev.currentAllocatedSize >= budget - budget / 10;
++    }
++    return pressure;
++#else
++    return 0;
++#endif
++}
+ static uint64_t g_alloc_frame, g_alloc_shared, g_alloc_shares; static int g_alloc_used;   // the current allocator: the frame it was taken in, the submissions it has served since its reset; submissions that shared one so far
+ int mtl_wait(uint64_t fence, uint64_t timeout_ns);
+ static int mtl_wait_at(uint64_t fence, uint64_t timeout_ns, int site);
+@@ -3003,6 +3022,13 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
+     pthread_cond_broadcast(&g_cv); pthread_mutex_unlock(&g_mu);
+     nvn_queue_gpu_progress();
+ }
++// A failed commit can return its feedback without the queue executing its shared-event
++// signal. SyncWait may already be sleeping on that event. Publish the completed prefix
++// only after its CPU-side reports have landed, and keep recoverable errors on the same queue.
++static void post_feedback_complete(uint64_t fence, uint64_t c0, uint64_t c1, NSError *error) {
++    post_complete(fence, c0, c1);
++    if (error || atomic_load(&g_gpu_lost)) gpu_publish_completed_fence();
++}
+ static uint64_t g_sub_ready;   // mtl_sub_ready, for the submission being encoded
+ void mtl_sub_ready(uint64_t t) { g_sub_ready = t; }
+ static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
+@@ -3065,8 +3091,7 @@ uint64_t mtl_sub_commit(void) {
+         if (cb.error) { atomic_store(&g_last_commit_error, 1); res_top_once(cb.error); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("[RED] command buffer error details fence=%llu: %s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("[RED] state of the failed submission fence=%llu: %s", (unsigned long long)fence, cctx.UTF8String); MLOG("[RED] command buffer execution error: %s", cb.error.localizedDescription.UTF8String); }
+         char where[64]; snprintf(where, sizeof where, "fence %llu, its last command buffer", (unsigned long long)fence); cbs_feedback(cbs, cb.error, where);
+         gpu_lost_check(lost_test ? gpu_lost_test_error() : cb.error, "submission");
+-        post_complete(fence, c0, c1);
+-        if (atomic_load(&g_gpu_lost)) gpu_lost_release();   // the GPU signals none of these fences
++        post_feedback_complete(fence, c0, c1, cb.error);
+         defer_drain(); defer_idle_commit();
+     }];
+     void arena_commit(uint64_t fence); arena_commit(fence);
+@@ -3672,8 +3697,13 @@ static void up_idle_release(void) {
+             age->window_ns = now;
+         }
+     }
+-    // Commit the removals before this submission can allocate more GPU memory.
+-    if (g_up_idle_n != before) res_commit();
++    // An idle slot has no GPU users. The residency queue retains the retired
++    // allocations until their removal is committed. Under memory pressure,
++    // release them before the next submission can allocate more staging.
++    if (g_up_idle_n != before) {
++        if (TARGET_OS_IPHONE && !gpu_cache_under_pressure()) res_commit_async(nil);
++        else res_commit();
++    }
+     static uint64_t said_ns;
+     if (!said_ns || now - said_ns >= 30000000000ull || (!before && g_up_idle_n)) {
+         said_ns = now;
+@@ -3945,23 +3975,38 @@ static struct { uintptr_t a, b; __unsafe_unretained id<MTLBuffer> buf; } g_sp_sr
+ // The gather's source buffers kept from batch to batch (DM_NVN_SP_SRC_CACHE, on by default; 0: made again in each batch, as before). A texture in a sparse pool whose pages lie
+ // far apart takes a buffer for nearly each page: PRAGMATA's streamed 8192x4096 BC6H texture (32 MB) took 7,073 at each whole re-upload, 10-30 ms of the submit thread
+ // in making them (iPhone 18 Pro, V11, DM_NVN_REUPLOADS: the page table was all of its CPU time), and it was re-uploaded 136 times in a run, its pages hardly changing.
+-// Kept by their page range (the one up_big_src_ makes over), resident while kept; one unused for SPC_IDLE upload batches, or past SPC_MAX kept, goes with the batch then
+-// open (g_up_keep: removed from the residency set and released once that batch has run, after every earlier batch that read it). The memory under them is the guest's,
++// Kept by their page range (the one up_big_src_ makes over), resident while kept. At capacity keep the ranges used by the most recent batches and retire the rest with
++// the open batch (g_up_keep: removed from the residency set and released once that batch has run, after every earlier batch that read it). The memory under them is the guest's,
+ // mapped for the whole run, so a kept buffer never outlives its pages
+-enum { SPC_BITS = 15, SPC_N = 1 << SPC_BITS, SPC_MAX = 12000, SPC_IDLE = 600 };
++enum { SPC_BITS = 15, SPC_N = 1 << SPC_BITS, SPC_MAX = 12000, SPC_KEEP = 9000, SPC_IDLE = 600 };
+ static struct { uintptr_t a, b; void *buf; unsigned used; } g_spc[SPC_N];   // open addressing by a; buf retained (CFBridgingRetain); a == 0: empty
+ static unsigned g_spc_n; static uint64_t g_spc_hits, g_spc_made, g_spc_gone, g_spc_logged;
+ static int spc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_SP_SRC_CACHE"); v = !e || atoi(e) != 0; if (!v) MLOG("DM_NVN_SP_SRC_CACHE=0: the sparse gather's source buffers are made again in each upload batch"); } return v; }
+ static unsigned spc_slot(uintptr_t a) { return (unsigned)((a >> 14) * 0x9E3779B97F4A7C15ull >> (64 - SPC_BITS)); }
+-static void spc_sweep(void) {   // the idle ones (all past SPC_MAX) go with the open batch; the table is laid out again
++static void spc_sweep(void) {
+     static struct { uintptr_t a, b; void *buf; unsigned used; } keep[SPC_N]; unsigned nk = 0, gone = 0;
++    // A full reset recreates thousands of still-hot buffers in the next upload. Find the last batch to keep and the number of slots it can retain.
++    unsigned age_counts[SPC_IDLE + 1] = {0};
++    for (unsigned i = 0; i < SPC_N; i++) {
++        unsigned age = g_up_seq - g_spc[i].used;
++        if (g_spc[i].a && age <= SPC_IDLE) age_counts[age]++;
++    }
++    unsigned keep_at_cutoff = SPC_KEEP;
++    unsigned cutoff = 0;
++    while (cutoff <= SPC_IDLE && age_counts[cutoff] <= keep_at_cutoff) {
++        keep_at_cutoff -= age_counts[cutoff++];
++    }
+     for (unsigned i = 0; i < SPC_N; i++) { if (!g_spc[i].a) continue;
+-        if (g_up_seq - g_spc[i].used > SPC_IDLE || g_spc_n > SPC_MAX) { id<MTLBuffer> b = CFBridgingRelease(g_spc[i].buf); [g_up_keep addObject:b]; gone++; }
++        unsigned age = g_up_seq - g_spc[i].used;
++        if (age > SPC_IDLE || age > cutoff || (age == cutoff && !keep_at_cutoff)) { id<MTLBuffer> b = CFBridgingRelease(g_spc[i].buf); [g_up_keep addObject:b]; gone++; }
+         else { keep[nk].a = g_spc[i].a; keep[nk].b = g_spc[i].b; keep[nk].buf = g_spc[i].buf; keep[nk++].used = g_spc[i].used; }
++        if (age == cutoff && keep_at_cutoff) keep_at_cutoff--;
+         g_spc[i].a = 0; g_spc[i].buf = NULL; }
+     g_spc_n = 0; g_spc_gone += gone;
+     for (unsigned k = 0; k < nk; k++) { unsigned i = spc_slot(keep[k].a); while (g_spc[i].a) i = (i + 1) & (SPC_N - 1);
+         g_spc[i].a = keep[k].a; g_spc[i].b = keep[k].b; g_spc[i].buf = keep[k].buf; g_spc[i].used = keep[k].used; g_spc_n++; }
++    static unsigned logged;
++    if (logged < 8) { logged++; MLOG("sparse gather cache: retained %u recent ranges, retired %u", nk, gone); }
+ }
+ static id<MTLBuffer> spc_get(uint64_t addr, uint64_t len, uint64_t *off) {   // in an open upload batch (up_begin)
+     if (!spc_on()) return up_big_src(addr, len, off);
+@@ -3971,7 +4016,7 @@ static id<MTLBuffer> spc_get(uint64_t addr, uint64_t len, uint64_t *off) {   //
+         if (g_spc[i].a == a && g_spc[i].b == b) { g_spc[i].used = g_up_seq; g_spc_hits++; *off = (uint64_t)addr - a; return (__bridge id<MTLBuffer>)g_spc[i].buf; }
+     id<MTLBuffer> u = up_big_src_(addr, len, off, 0);
+     if (!u) return nil;
+-    if (g_spc_n + 1 > SPC_MAX || g_spc_n + 1 > SPC_N / 2) { spc_sweep(); i = spc_slot(a); while (g_spc[i].a) i = (i + 1) & (SPC_N - 1); }
++    if (g_spc_n >= SPC_MAX) { spc_sweep(); i = spc_slot(a); while (g_spc[i].a) i = (i + 1) & (SPC_N - 1); }
+     g_spc[i].a = a; g_spc[i].b = b; g_spc[i].buf = (void *)CFBridgingRetain(u); g_spc[i].used = g_up_seq; g_spc_n++; g_spc_made++;
+     if (g_spc_hits + g_spc_made - g_spc_logged >= 100000) { g_spc_logged = g_spc_hits + g_spc_made;
+         MLOG("sparse gather source buffers (DM_NVN_SP_SRC_CACHE): %u kept, %llu reused, %llu made, %llu let go", g_spc_n, (unsigned long long)g_spc_hits, (unsigned long long)g_spc_made, (unsigned long long)g_spc_gone); }
+@@ -6963,7 +7008,7 @@ static void shmap_read(void) {
+     id<MTLFunction> mesh_obj;   // a mesh shader with no task: the object function that launches its workgroups in blocks of DMSH_MESH_GRID (dmsh_meshstage.py main0_o)
+     uint32_t tess_out_cp, tess_in_bytes, tess_md; int tess_ok;   // a hull / domain shader rewritten for replay (dmsh_tess.py, nvn_tess.inc); tess_md: a domain's mode (dmsh_tess.mode_bits)
+     id<MTLComputePipelineState> geo_pso; int geo_pso_failed, cps_failed;   // cps_failed: Metal refused this compute shader's pipeline (dispatch): its dispatches are skipped without asking again
+-    uint64_t loop_sub, loop_gpu; _Atomic int loop_reported;   // this submission's per-kernel cap-hit state; feedback logs at most once per loaded kernel
++    uint64_t loop_sub, loop_gpu; _Atomic uint64_t loop_hits;   // per-submission cap-hit record and count of submissions with a hit for this kernel
+     int16_t *geo_slot; uint32_t geo_words;   // a lean passthrough kernel (dmsh_geometry.lean): capture word -> record slot (-1: not read), record words
+     NvShader *geo_lean_v[5]; uint8_t geo_lean_tried;   // a geometry shader's lean kernels by input topology (looked up once)
+     NvShader *geo_bg_v[5], *geo_bgv_v; uint8_t geo_bg_tried;   // its kernels by input topology (_bg<n>) and its reader (_bgv), looked up once (bit 7: the reader)
+@@ -8385,7 +8430,9 @@ static unsigned arena_trim(uint64_t idle) {
+ void arena_begin(void) {
+     if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; }
+     g_cur_arena = nil;
+-    arena_trim(ARENA_IDLE);
++    // At the budget, shorten the idle age for excess scratch. arena_trim
++    // still keeps pending fences and the small reuse pool untouched.
++    arena_trim(arena_trim_on() && gpu_cache_under_pressure() ? ARENA_IDLE / 4 : ARENA_IDLE);
+     if (g_arena_next) { NvArena *a = g_arena_next; g_arena_next = nil; [g_arenas removeObjectIdenticalTo:a]; [g_sub_arenas addObject:a]; g_cur_arena = a; }
+ }
+ void arena_commit(uint64_t fence) {
+@@ -13070,13 +13117,15 @@ static id<MTLBuffer> gmem_map(void) {
+         }
+     }
+     if (over) RED_ONCE(140, "raw global memory: %d more memory pools than the %d entries of the pool table; addresses in them are not reached", over, DMSH_GMEM_MAP_ENTRIES - 1);
+-    res_add(b); res_commit();
++    res_add(b);   // cb_commit names the set and submits only after applying its queued changes
+     if (g_gmem_buf) defer_obj_release(g_gmem_buf);
+     g_gmem_buf = b; g_gmem_gen = gen;
+     { static int said; if (!said++) MLOG("raw global memory: pool table of %d ranges (pool generation %llu), rebuilt whenever a pool comes or goes", n - 1, (unsigned long long)gen); }
+     return b;
+ }
+ static uint64_t gmem_map_gpu(void) { return gmem_map().gpuAddress; }
++// Keep the last snapshot during encoding. The seal updates the argument and write log together.
++static id<MTLBuffer> gmem_encode_map(void) { return g_gmem_buf ?: gmem_map(); }
+ // A raw pointer read from a fixed storage-buffer word can reach a pool whose address no NVN getter handed out. Discover it before the draw, including when its argument block is
+ // reused; gmem_commit_patch then gives every block the complete table. Record the logical pool/run, not each interior pointer or the Metal buffer's page-rounded padding.
+ // The CPU sees only pointer values available now (or a complete queued inline update). GPU-generated values still rely on the table; this does not fix task/mesh ordering hangs.
+@@ -13197,7 +13246,7 @@ static uint64_t gml_take(id<MTLBuffer> map) {
+     if (predict) for (int i = 0; i < g_gml_n; i++) sbw_note(g_gml_lo[i], g_gml_hi[i] - g_gml_lo[i], SBW_GPU);
+     pthread_mutex_unlock(&g_gml_mu);
+     if (!predict) sbw_note(0, 0, SBW_GPU);
+-    if (!b) { b = [g_dev newBufferWithLength:GML_BYTES options:MTLResourceStorageModeShared]; res_add(b); res_commit(); }
++    if (!b) { b = [g_dev newBufferWithLength:GML_BYTES options:MTLResourceStorageModeShared]; res_add(b); }
+     memset(b.contents, 0, GML_BYTES);
+     g_gml_on = 1; uint64_t fence = g_fence + 1;   // this submission's fence (mtl_sub_commit)
+     NvGmlLog *log = [NvGmlLog new]; log->b = b; log->map = map; g_gml_last = log;
+@@ -13847,7 +13896,7 @@ static int encode_args_full(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stag
+             slots[aid] = (sh->c1buf ? sh->c1_gpu : zero_bank_gpu()) + (sh->c1buf ? sh->c1off : 0);
+             USE(cb, MTLResourceUsageRead);
+         } else if (b->kind == NVN_RB_GMEM || b->kind == NVN_RB_GMEML) {   // B: the memory pool table for addresses traced to no storage buffer (gmem_map), and the write log of those stores (gml_take)
+-            if (!raw_map) raw_map = gmem_map();   // the log and the shader use the same table even if a pool comes in during the encode
++            if (!raw_map) raw_map = gmem_encode_map();
+             slots[aid] = b->kind == NVN_RB_GMEM ? raw_map.gpuAddress : gml_take(raw_map);
+             if (b->kind == NVN_RB_GMEM) gmem_aid = aid; else gml_taken = 1;
+             if (bl && b->kind == NVN_RB_GMEM) PD("B %llu st%d gmem %s", g_stat_pass, nvn_stage, b->rw ? "rw" : "ro");
+@@ -16726,10 +16775,14 @@ static uint64_t loop_state(NvShader *cs) {
+         memcpy(state, &abort_gpu, sizeof abort_gpu); memcpy(state + DMSH_LOOP_HIT, &hit, sizeof hit);
+         if (!cs->loop_sub) MLOG("compute loop containment: kernel %s, %u loop sites (including helpers)", cs->key, cs->rf.loop_sites);
+         cs->loop_sub = fence; cs->loop_gpu = b.gpuAddress + off;
++        uint64_t frame = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
+         [g_commit_blocks addObject:^{
+             uint32_t site; memcpy(&site, (const uint8_t *)b.contents + off + DMSH_LOOP_HIT, sizeof site);
+-            if (site != UINT32_MAX && !atomic_exchange(&cs->loop_reported, 1))
+-                MLOG("[RED] loop cap hit: submission %llu, kernel %s, loop site %u (loop_sites in its reflection; cause open)", (unsigned long long)fence, cs->key, site);
++            if (site == UINT32_MAX) return;
++            uint64_t hits = atomic_fetch_add_explicit(&cs->loop_hits, 1, memory_order_relaxed) + 1;
++            if (!(hits & (hits - 1)))
++                MLOG("[RED] loop cap hit: submission %llu, kernel %s, loop site %u (frame %llu, %llu submissions with a hit; cause open)",
++                     (unsigned long long)fence, cs->key, site, (unsigned long long)frame, (unsigned long long)hits);
+         }];
+     }
+     return cs->loop_gpu;
+@@ -16757,6 +16810,39 @@ static int dpc_clamp_enc(id ce, uint64_t rec, __strong id<MTLBuffer> *ob, size_t
+     [e barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch | MTLStageBlit visibilityOptions:resource_vis()];
+     return 1;
+ }
++// Opt-in iOS comparison for PRAGMATA's three persistent SDF queue workers.
++// The shipped functions claim work from shared counters; none uses its grid
++// position or reads the grid dimensions. Match the shader build inspected for
++// that property. Keep each group's lane layout and the queue's exit logic.
++static uint32_t pragmata_sdf_grid_x(const NvShader *cs, const p_dispatch *dp) {
++    uint32_t x = dp->x;
++#if TARGET_OS_IPHONE
++    static int groups = -1;
++    if (groups < 0) {
++        groups = 0;
++        if (!strcmp(DM_GAME_ID, "0400C76024710000") && !strcmp(DMSH_CHAIN, "63853cc4c4e3")) {
++            const char *e = getenv("DM_PRAGMATA_SDF_GROUPS");
++            if (!e || !*e) groups = 32;
++            else if (!strcmp(e, "16")) groups = 16;
++            else if (!strcmp(e, "32")) groups = 32;
++            else if (!strcmp(e, "64")) groups = 64;
++            MLOG("PRAGMATA frame pacing: SDF queue %d workgroups (guest grid 128)", groups ? groups : 128);
++        }
++    }
++    if (groups && !dp->ind && x == 128 && dp->y == 1 && dp->z == 1 &&
++        cs->rf.tg[0] == 32 && cs->rf.tg[1] == 1 && cs->rf.tg[2] == 1 &&
++        (!strcmp(cs->key, "251426e9d44fd558_b") || !strcmp(cs->key, "a39d5e8748386dea_b") ||
++         !strcmp(cs->key, "8c48c7ffd257c63d_b"))) {
++        static int started;
++        if (!started++) MLOG("PRAGMATA SDF queue: %d workgroups instead of 128 (DM_PRAGMATA_SDF_GROUPS)", groups);
++        return (uint32_t)groups;
++    }
++#else
++    (void)cs;
++#endif
++    return x;
++}
++
+ static void dispatch_(const p_dispatch *dp) {
+     g_wr_epoch++; g_mdx_epoch++;
+     if (!S.cprog) { RED_ONCE(27, "no program bound before the dispatch"); return; }
+@@ -16830,7 +16916,8 @@ static void dispatch_(const p_dispatch *dp) {
+         if (tg_groups > (g_dev.maxBufferLength - (4u << 20)) / cs->rf.tg_spill) { RED_ONCE(162, "dispatch of %s: %llu workgroups of %u bytes of threadgroup memory exceed Metal's largest buffer; skipped", cs->key, (unsigned long long)tg_groups, cs->rf.tg_spill); return; }
+     }
+     int own = dispatch_own();
+-    g_dispatch_dim[0] = (uint32_t)dp->x; g_dispatch_dim[1] = (uint32_t)dp->y; g_dispatch_dim[2] = (uint32_t)dp->z;   // read back by the driver segment c0 (encode_args_)
++    uint32_t grid_x = pragmata_sdf_grid_x(cs, dp);
++    g_dispatch_dim[0] = grid_x; g_dispatch_dim[1] = (uint32_t)dp->y; g_dispatch_dim[2] = (uint32_t)dp->z;   // read back by the driver segment c0 (encode_args_)
+     g_c0_dim_buf = nil;
+     // A sampled format view may upgrade its texture and copy its pixels. Prepare the compute table before opening an encoder of its own,
+     // or before dispatch_enc's copy-to-dispatch barrier: otherwise the upgrade opens a second encoder, or its copy races the dispatch (#1743).
+@@ -16855,7 +16942,7 @@ static void dispatch_(const p_dispatch *dp) {
+             if (dm_sdk_ounce()) [(id<MTL4ComputeCommandEncoder>)ce copyFromBuffer:(__bridge id<MTLBuffer>)ib sourceOffset:io toBuffer:g_c0_dim_buf destinationOffset:g_c0_dim_off - DMSH_C0_DISPATCH + DMSH_C0_DISPATCH_NVN2 size:12];
+             [(id<MTL4ComputeCommandEncoder>)ce barrierAfterEncoderStages:MTLStageBlit beforeEncoderStages:MTLStageDispatch visibilityOptions:resource_vis()]; }
+         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
+-    } else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
++    } else enc_c_dispatch(ce, MTLSizeMake(grid_x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
+     bufsnap_after(cs, ce);
+     if (own) enc_c_end(ce);
+ }
+diff --git a/dm/gfx/nvn/nvn_tess.inc b/dm/gfx/nvn/nvn_tess.inc
+index 334cdfc..03432ac 100644
+--- a/dm/gfx/nvn/nvn_tess.inc
++++ b/dm/gfx/nvn/nvn_tess.inc
+@@ -222,11 +222,18 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
+         NSError *e = nil; id<MTLLibrary> lib = dev_lib(@(k_tess_msl), &e);
+         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"dm_tess_expand"] : nil;
+         g_tess_kpso = fn ? dev_cps(fn, &e) : nil;
+-        id<MTLFunction> gfn = lib ? [lib newFunctionWithName:@"dm_tess_geo"] : nil;
+-        g_tess_gpso = gfn ? dev_cps(gfn, &e) : nil;
+         g_tess_stats = [g_dev newBufferWithLength:64 * 4 options:MTLResourceStorageModeShared];
+-        if (!g_tess_kpso || !g_tess_gpso || !g_tess_stats) { g_tess_kfail = 1; MLOG("[RED] tessellation expansion kernel: %s", e.localizedDescription.UTF8String); }
+-        else { memset(g_tess_stats.contents, 0, 64 * 4); res_add(g_tess_stats); }
++        if (!g_tess_kpso || !g_tess_stats) {
++            g_tess_kfail = 1;
++            MLOG("[RED] tessellation expansion kernel: %s", e ? e.localizedDescription.UTF8String : "missing pipeline or statistics buffer");
++        } else {
++            memset(g_tess_stats.contents, 0, 64 * 4); res_add(g_tess_stats);
++            NSError *geo_error = nil;
++            id<MTLFunction> gfn = [lib newFunctionWithName:@"dm_tess_geo"];
++            g_tess_gpso = gfn ? dev_cps(gfn, &geo_error) : nil;
++            if (!g_tess_gpso)
++                MLOG("[RED] tessellation geometry count kernel: %s", geo_error ? geo_error.localizedDescription.UTF8String : "missing function");
++        }
+     }
+     if (g_tess_kfail) { tess_refuse(pr, dw, di, "expansion kernel"); return; }
+     if (np >= (1u << 20)) { tess_refuse(pr, dw, di, "too many patches for the cell list"); return; }
+@@ -234,6 +241,7 @@ static void tess_draw(NvProg *pr, const p_draw *dw0, const p_draw_idx *di0) {
+     // A geometry shader after the domain (nvn_geometry.inc geo_prep_gpu): its triangles, two an entry, must fit the geometry path's 256 MiB scratch
+     NvShader *ggs = nil, *greader = nil; id<MTLComputePipelineState> __strong *gpack = NULL;
+     if (pr->sh[2]) {
++        if (!g_tess_gpso) { tess_refuse(pr, dw, di, "geometry shader after the domain: no count pipeline"); return; }
+         uint64_t per = geo_gpu_kernels(pr, &ggs, &greader);
+         if (!per || !(gpack = geo_pack_psos())) { tess_refuse(pr, dw, di, "geometry shader after the domain: no triangle kernel"); return; }
+         if (!ds->geo_fn) { tess_refuse(pr, dw, di, "geometry shader after the domain: the domain has no capture entry"); return; }
+diff --git a/dm/gfx/tests/t_compute_loops.m b/dm/gfx/tests/t_compute_loops.m
+index c1ae331..9c5c73e 100644
+--- a/dm/gfx/tests/t_compute_loops.m
++++ b/dm/gfx/tests/t_compute_loops.m
+@@ -36,18 +36,18 @@ int main(int argc, char **argv) { @autoreleasepool {
+     S.cprog = &pb; dispatch(&one); S.cprog = &pc; dispatch(&one); finish();
+     printf("spin: %u threads, most %u, fewest %u; canceled nested %u\n", q[1], q[2], q[3], q[4]);
+     CHECK(q[1] == 8u * 128u * 32u && q[2] == (1u << 14) && q[3] < (1u << 14), "helper cap ends every thread and later dispatches see abort");
+-    CHECK(atomic_load(&spin->loop_reported) && !atomic_load(&healthy->loop_reported), "only the cap hitter is reported, not a canceled kernel");
++    CHECK(atomic_load(&spin->loop_hits) && !atomic_load(&healthy->loop_hits), "only the cap hitter is reported, not a canceled kernel");
+     CHECK(q[4] < 256u * 256u, "submission abort shortens later bounded work");
+     int arrived = 1; for (unsigned i = 0; i < 32; i++) arrived &= q[8 + i] == 2047;
+-    CHECK(arrived && atomic_load(&barrier->loop_reported), "barrier loops keep a uniform fresh budget despite unequal prior work and the abort");
++    CHECK(arrived && atomic_load(&barrier->loop_hits), "barrier loops keep a uniform fresh budget despite unequal prior work and the abort");
+     begin(mem); S.cprog = &pb; dispatch(&one); finish();
+     CHECK(q[4] == 256u * 256u, "next submission gets clean state and legitimate nested loops run fully");
+-    CHECK(!atomic_load(&healthy->loop_reported), "valid cumulative budget produces no cap hit");
++    CHECK(!atomic_load(&healthy->loop_hits), "valid cumulative budget produces no cap hit");
+     q[0] = 2; begin(mem); S.cprog = &pb; dispatch(&one); finish();
+     printf("exhausted nested: %u\n", q[4]);
+-    CHECK(q[4] == 261632u && atomic_load(&healthy->loop_reported), "a legitimate exhausted function budget is reported");
++    CHECK(q[4] == 261632u && atomic_load(&healthy->loop_hits), "a legitimate exhausted function budget is reported");
+     q[0] = 0; q[3] = UINT32_MAX; begin(mem); S.cprog = &pa; dispatch(&one); finish();
+-    CHECK(atomic_load(&spin->loop_reported), "repeat cap hit retains once-per-kernel report state");
++    CHECK(atomic_load(&spin->loop_hits) == 2, "a second submission increments the cap-hit count");
+     mtl_pool_del(mem); mtl_drain(); free(mem);
+     printf("t_compute_loops: %d checks, %d failed\n", checks, failed); return failed != 0;
+ } }
+diff --git a/dm/gfx/tests/t_gmem_words.m b/dm/gfx/tests/t_gmem_words.m
+index 57f3bbb..4a2e7bd 100644
+--- a/dm/gfx/tests/t_gmem_words.m
++++ b/dm/gfx/tests/t_gmem_words.m
+@@ -23,7 +23,7 @@ int main(void) { @autoreleasepool {
+     uint64_t a = (uint64_t)(uintptr_t)mem;
+     mtl_pool_add(mem, 4 * MB); mtl_pool_addressed(mem, 4 * MB);
+     mtl_sub_begin();
+-    uint64_t t0 = gmem_map_gpu();                    // the table two argument blocks were encoded with
++    uint64_t t0 = gmem_encode_map().gpuAddress;     // the table two argument blocks were encoded with
+     uint64_t w0 = t0, w1 = t0, w2 = 0;
+     uint64_t words0, older0, behind0; mtl_gmem_words(&words0, &older0, &behind0);
+     gmem_slot_note(&w0, NULL); gmem_slot_note(&w1, NULL);
+@@ -33,6 +33,7 @@ int main(void) { @autoreleasepool {
+     CHECK("two words counted, none out of date", words - words0 == 2 && older == older0 && behind == behind0);
+     mtl_pool_add(mem + 8 * MB, 4 * MB); mtl_pool_addressed(mem + 8 * MB, 4 * MB);              // a pool made after the blocks were encoded
+     CHECK("the table the words hold lacks it", !table_has(t0, a + 8 * MB));
++    CHECK("encoding another argument keeps the last snapshot", gmem_encode_map().gpuAddress == t0);
+     gmem_slot_note(&w0, NULL); gmem_slot_note(&w1, NULL);
+     gmem_commit_patch();
+     uint64_t t1 = g_gmem_buf.gpuAddress;
+@@ -70,6 +71,9 @@ int main(void) { @autoreleasepool {
+     gmem_slot_note(&w8, NULL);
+     mdi_wait();
+     CHECK("a count wait's commit points the words encoded before it at the pools", w8 == g_gmem_buf.gpuAddress && table_has(w8, a + 48 * MB));
++    pthread_mutex_lock(&g_res_mu);
++    CHECK("the table and write log enter residency before submission", [g_res containsAllocation:g_gmem_buf] && [g_res containsAllocation:lg->b]);
++    pthread_mutex_unlock(&g_res_mu);
+     CHECK("and leaves none of them noted, so the next commit does not rewrite them after the GPU ran them", g_gmem_nslots == 0);
+     CHECK("submission completes", mtl_wait(mtl_sub_commit(), 5000000000ull));
+     CHECK("GPU has no submission error", !mtl_last_commit_error());
+diff --git a/dm/gfx/tests/t_gpu_lost.m b/dm/gfx/tests/t_gpu_lost.m
+index 8f480ec..337fb1e 100644
+--- a/dm/gfx/tests/t_gpu_lost.m
++++ b/dm/gfx/tests/t_gpu_lost.m
+@@ -33,7 +33,43 @@ static tex_t picture(void) {
+     // NOLINTEND(clang-analyzer-osx.cocoa.RetainCount)
+ }
+ static int present_asks(const tex_t *t) { int before = atomic_load(&g_layer_asks); mtl_present_wait(mtl_present(t, 1. / 60, NULL, NULL)); return atomic_load(&g_layer_asks) - before; }
+-int main(void) { @autoreleasepool {
++// Holds the CPU-visible event value without creating a Metal device. The
++// virtual CI runner can still check the real feedback/completion code path.
++@interface TestFenceEvent : NSObject
++@property(nonatomic) uint64_t signaledValue;
++@end
++@implementation TestFenceEvent
++@end
++
++static void recoverable_feedback(NSString *mtl4, NSString *iogpu) {
++    // Model a recoverable command-buffer error with an omitted GPU signal. Feedback
++    // is the only completion for this empty submission; no fault is sent to Metal.
++    uint64_t recoverable = ++g_fence;
++    post_rec *pending = &g_postr[recoverable % POST_RING];
++    atomic_store(&pending->claimed, 0);
++    atomic_store(&pending->fence, recoverable);
++    CHECK("the shared event still precedes the errored submission", g_ev.signaledValue < recoverable);
++    NSError *fault = nested(mtl4, MTL4CommandQueueErrorTimeout, nested(iogpu, 11, nil));
++    post_feedback_complete(recoverable, 0, 0, fault);
++    CHECK("recoverable feedback wakes the shared-event path", g_ev.signaledValue >= recoverable);
++    CHECK("CPU-side completion landed before the signal", pending->claimed && mtl_completed_fence() == recoverable);
++    CHECK("recoverable feedback does not revoke GPU access", !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls));
++}
++
++int main(int argc, char **argv) { @autoreleasepool {
++    if (argc == 2 && !strcmp(argv[1], "--check-device"))
++        return ![MTLCreateSystemDefaultDevice() supportsFamily:MTLGPUFamilyMetal4];
++    if (argc == 2 && !strcmp(argv[1], "--feedback-only")) {
++        TestFenceEvent *event = [TestFenceEvent new];
++        g_ev = (id<MTLSharedEvent>)event;
++        recoverable_feedback(MTL4CommandQueueErrorDomain, @"IOGPUCommandQueueErrorDomain");
++        uint64_t completed = mtl_completed_fence();
++        event.signaledValue = completed + 1;
++        gpu_publish_completed_fence();
++        CHECK("CPU publication never lowers the shared event", event.signaledValue == completed + 1);
++        printf("t_gpu_lost --feedback-only: %d checks, %d failed\n", checks, failed);
++        return failed != 0;
++    }
+     alarm(60); setvbuf(stdout, NULL, _IONBF, 0);
+     setenv("DM_TEST_GPU_LOST", "3", 1);
+     setenv("DM_PRESENT_LINK", "0", 1); setenv("DM_PRESENT_SNAP", "0", 1);   // presents on the present thread, straight from the game's texture
+@@ -52,6 +88,8 @@ int main(void) { @autoreleasepool {
+     CHECK("submissions before run as before", ok && !atomic_load(&g_gpu_lost) && !atomic_load(&test_gpu_lost_calls) && !mtl_last_commit_error());
+     CHECK("a present before asks for the layer", present_asks(&pic) == 1);
+ 
++    recoverable_feedback(mtl4, iogpu);
++
+     f = submit_wait(&ok, &ms);
+     printf("submission %llu (revoked): SyncWait %s in %.1f ms, shared event at %llu\n", (unsigned long long)f, ok ? "returned" : "timed out", ms, (unsigned long long)g_ev.signaledValue);
+     CHECK("the front end is told", atomic_load(&g_gpu_lost) && atomic_load(&test_gpu_lost_calls) == 1);
+diff --git a/dm/gfx/tests/test_dmsh_compute_loops.py b/dm/gfx/tests/test_dmsh_compute_loops.py
+index c36aa9c..d461871 100644
+--- a/dm/gfx/tests/test_dmsh_compute_loops.py
++++ b/dm/gfx/tests/test_dmsh_compute_loops.py
+@@ -160,7 +160,8 @@ class ComputeLoops(unittest.TestCase):
+                 run = subprocess.run([str(TOOLS.parent / 'tests/t_compute_loops'), str(spin), str(healthy), str(barrier)], env=env, capture_output=True, text=True, timeout=60)
+                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                 log = run.stdout + run.stderr
+-                self.assertEqual(log.count('[RED] loop cap hit:'), 3, log)
++                self.assertEqual(log.count('[RED] loop cap hit:'), 4, log)
++                self.assertIn('2 submissions with a hit', log)
+                 self.assertIn('kernel 1111111111111111, loop site 1', log)
+                 self.assertIn('kernel 2222222222222222, loop site 1', log)
+                 self.assertIn('kernel 3333333333333333, loop site 2', log)
+diff --git a/dm/host/hle_svc.c b/dm/host/hle_svc.c
+index d93a5cd..9accb75 100644
+--- a/dm/host/hle_svc.c
++++ b/dm/host/hle_svc.c
+@@ -160,19 +160,30 @@ static double guest_file_free_important(void) {
+ static void *guest_file_thread(void *arg) {
+     (void)arg; const double G = 1073741824.0; size_t pg = (size_t)getpagesize(); char *vec = malloc(g_reserve / pg + 1);
+     const char *sc = getenv("DM_GUEST_FILE_SCAN"); int scan = sc && atoi(sc) > 0, purge_told = 0;
+-    double imp = -1, dirty = -1, count_ms = 0; unsigned imp_at = 0;
++    double imp = -1, dirty = -1, count_ms = 0;
++    unsigned imp_at = 0, dirty_at = 0;
+     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+     for (unsigned sec = 1;; sec++) {
+         sleep(1);
+         struct statfs fs; struct rusage_info_v4 ru; task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; struct stat st; struct timespec t0, t1;
+         if (sec % 10 == 0) guest_file_sweep();
+-        if (sec % 10 == 1) {   // every 10 s, from the first second (a burst of new dirty pages between two counts is what the margin's other half is for)
++        int fs_ok = !fstatfs(g_gf_tab[0], &fs);
++        double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1;
++        // Even writing every byte of the backing files cannot reach the stop or
++        // warning thresholds with this much free space. Avoid walking the guest
++        // address space for its dirty-page count until that upper bound matters.
++        int scan_needed = scan || !fs_ok || avail - (double)g_reserve < (double)g_gf_min_free + G;
++        if (!scan_needed) {
++            dirty_at = 0;
++            dirty = -1;
++            count_ms = 0;
++        } else if (!dirty_at || sec - dirty_at >= 10) {
++            dirty_at = sec;
+             clock_gettime(CLOCK_MONOTONIC, &t0);
+             dirty = vec ? guest_file_dirty(vec, pg) : -1;
+             clock_gettime(CLOCK_MONOTONIC, &t1); count_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+         }
+-        double need = dirty > 0 ? dirty : 0, held = 0;
+-        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1, room = avail - need;
++        double held = 0, need = dirty > 0 ? dirty : 0, room = avail - need;
+         if (fs_ok && g_gf_min_free && room < (double)g_gf_min_free) {
+             if (imp < 0 || sec - imp_at >= 10) { imp = guest_file_free_important(); imp_at = sec; }
+             if (room < g_gf_min_free / 2.0 || imp - need < (double)g_gf_min_free) {
+@@ -189,9 +200,14 @@ static void *guest_file_thread(void *arg) {
+         for (int i = 0; i < g_gf_n; i++) if (!fstat(g_gf_tab[i], &st)) held += st.st_blocks * 512.0;
+         int ru_ok = !proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru);
+         if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) != KERN_SUCCESS) memset(&vi, 0, sizeof vi);
+-        LOG("%s[mem] guest file: %.2f GB allocated on disk, %.2f GB dirty in memory (%.0f ms to count, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
++        char dirty_note[96];
++        if (dirty >= 0)
++            snprintf(dirty_note, sizeof dirty_note, "%.2f GB dirty in memory (%.0f ms to count)", dirty / G, count_ms);
++        else
++            snprintf(dirty_note, sizeof dirty_note, "dirty-page count %s", scan_needed ? "unavailable" : "skipped (free space exceeds backing file capacity and margin)");
++        LOG("%s[mem] guest file: %.2f GB allocated on disk, %s, %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
+             "footprint %.2f GB (internal %.2f, compressed %.2f, peak so far %.2f), file pages mapped (external) %.2f GB; %.1f GB free on its disk (%.1f with what the system can purge)",
+-            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty / G, count_ms, atomic_load(&g_gf_punched) / G,
++            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty_note, atomic_load(&g_gf_punched) / G,
+             ru_ok ? ru.ri_diskio_bytesread / G : -1, ru_ok ? (unsigned long long)ru.ri_pageins : 0ull,
+             ru_ok ? ru.ri_logical_writes / G : -1, vi.phys_footprint / G, vi.internal / G, vi.compressed / G, ru_ok ? ru.ri_lifetime_max_phys_footprint / G : -1, vi.external / G, avail / G, imp / G);
+     }
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 7eb0094..fef5a3f 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -254,7 +254,7 @@ DM_NVN_SLICE_MERGE	switch	`0` keeps passes into other layers of one array or cub
+ DM_NVN_SNAPRAW	diagnostic	`=1` makes `DM_NVN_TEXDUMP` also save each target's raw bytes, with a text header line, since converting an HDR target to an 8-bit image truncates
+ DM_NVN_SPARSE_SINGLE_MB	switch	`=<MB>` (default 8): a single-level texture in a sparse pool is a placement sparse texture from that size, tile by tile (`sparse_make`); `0` keeps every texture under 64 MB whole, as before
+ DM_NVN_SPARSE_TILES	switch	`0` makes a sparse texture of 64 MB or more whole, as before; by default it is a Metal placement sparse texture with only the mapped tiles backed
+-DM_NVN_SP_SRC_CACHE	switch	`0` makes the sparse gather's zero-copy source buffers again for every upload batch; by default they are kept between batches and let go when idle (`spc_get`)
++DM_NVN_SP_SRC_CACHE	switch	`0` makes the sparse gather's zero-copy source buffers again for every upload batch; at capacity the default cache keeps the most recently used buffers (`spc_get`)
+ DM_NVN_STORAGE_ALIAS	switch	`0` keeps a 4-sample target and the single-sample image over its pool bytes (twice its width and height, the same format) in Metal allocations of their own instead of one heap (on by default, `pair_texture`; Metro 2033 Redux draws its effects into a 640x360 4-sample target over its 1280x720 scene target, and apart every particle, the laser sight and the muzzle flash are written where nothing reads them)
+ DM_NVN_STORAGE_FIRST_USE	switch	`0` keeps a sampled block-compressed texture in a CPU-writable pool to the one-time fill instead of making it CPU-written when its storage holds data at first use (on by default; `tex_cpu_content`), to measure it
+ DM_NVN_SUB_DRAIN	switch	`1` makes the replay wait for the encode thread at the end of every submission, as before (with `DM_NVN_ENC_THREAD`; by default a submission's end hands its records over and the replay goes on, and a present of the game's own texture waits for its commit); `ab` alternates with the `DM_AB` phases, to measure it
+@@ -317,6 +317,7 @@ DM_PAD_PRESS_TO_JOIN	player	`1`: a controller is no player until one of its butt
+ DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the module base for a long text (`BIG_TEXT`); set only by the rewriter's own rerun with the size it needs
+ DM_PHONE_MOTION	switch	On iOS, whether the phone's own device motion drives player 1's six-axis sensor: `auto` (default) while no controller supplies fresh motion, `1` phone only, `0` never; each source keeps its own orientation
+ DM_PICTURE_FIT	player	`fill` scales the 16:9 picture on the iPhone and iPad until it covers the screen in landscape and crops the edges (a portrait or tabletop split and a TV stay fitted); `fit` or unset, the largest 16:9 rectangle with black bars. Launcher and in-game menu setting
++DM_PRAGMATA_SDF_GROUPS	diagnostic	On iOS, defaults to 32 for the three inspected PRAGMATA persistent queue workers on chain 63853cc4c4e3. Set 128 to restore the guest grid, or 16 or 64 for comparison. Compare the same route for frame times and render output.
+ DM_PREEMPT	switch	`0` / `1` overrides the profile's `core_preempt`: also check already-runnable higher-priority peers on the caller's core after every thread SVC
+ DM_PRELOAD	diagnostic	Set: on the Mac, runs the host's early background loading (`dm_host_preload_start`) as the iOS app does, to exercise that path
+ DM_PRESENT_DEPTH	switch	`=<n>` (default 1): without the display link (`DM_PRESENT_LINK=0`), the acquire waits until at most n presents queued are not yet on screen or dropped, as the drawables' presented handlers report, so a frame cap the game holds no longer piles frames up in the present queue and the layer's drawables (not with present snapshots); `0` is the Switch's double buffering, which a Mac holds only below the screen's rate (about 40 fps at most at a 60 fps cap). Each 300 shown frames the log gives the time from the game's enqueue to the screen (`present: game enqueue to screen`) and these waits
+diff --git a/docs/reference/shaders.md b/docs/reference/shaders.md
+index 2fde43a..14b1cb4 100644
+--- a/docs/reference/shaders.md
++++ b/docs/reference/shaders.md
+@@ -3141,6 +3141,8 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
+ - **Found on:** The Legend of Zelda: Ocarina of Time (`0400486024DEC000`, profile in PR #1299): on the author's stack, loading the outdoor save, 5,729 of 154,107 words held an older table than the current one by frame 5,100 and 2,582 held the current one behind the pools. Whether this is what is left of the hang in issue #1326, minutes after a clean table growth, is open.
+ - **Check:** `t_gmem_words` (words noted, a pool made after them, an older table, a table that lags, a commit with no words, the commit before a count wait).
+ 
++On a PRAGMATA iOS run, raw pool tables accounted for 18,796 MB of accumulated residency additions over frames 2,101–2,400. The encoding path now reuses the last table and coalesces pool changes until `cb_seal`. The table and write log join the residency commit that precedes GPU execution. `t_gmem_words` checks snapshot reuse and residency after an indirect-count wait. The size above counts repeated additions, including pools that enter more than once.
++
+ ### Extended products behind spirv-cross's optnone helper
+ 
+ - **Symptom:** integer divisions by a constant cost GPU time that the compiler should have folded away. The MSL holds calls such as `(spvMulExtended<_2, uint>(uint(_5), 16u))._m1`, and spirv-cross defines `spvMulExtended` as `[[clang::optnone]]`, so each product stays a call to an unoptimized function.
