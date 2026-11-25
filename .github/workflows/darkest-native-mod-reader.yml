@@ -1,0 +1,30 @@
+name: Darkest Dungeon native Mod metadata build
+on:
+  push:
+    branches: [verify/darkest-native-mod-reader-20261125-090419]
+    paths: ['.github/workflows/darkest-native-mod-reader.yml']
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Compile iOS ARM64 metadata reader
+        working-directory: darkest-native-probe
+        run: |
+          xcrun --sdk iphoneos clang++ -arch arm64 -miphoneos-version-min=18.0 -std=c++17 -Wall -Wextra -O2 -c mod_project.cpp -o mod_project-ios-arm64.o
+          xcrun vtool -show-build mod_project-ios-arm64.o
+          xcrun lipo -archs mod_project-ios-arm64.o | grep -x arm64
+      - name: Run Apple toolchain smoke test
+        working-directory: darkest-native-probe
+        run: |
+          xcrun clang++ -std=c++17 -O2 mod_project.cpp test_project_reader.cpp -o test-project-reader
+          echo '<project><ModDataPath>data</ModDataPath><Title>First</Title><Title>Second</Title><VersionMinor>23</VersionMinor></project>' > project.xml
+          ./test-project-reader project.xml > result.tsv
+          grep -F "$(printf 'ok\t1')" result.tsv
+          grep -F "$(printf 'version_minor\t23')" result.tsv
+          grep -F "$(printf 'title\t4669727374')" result.tsv
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: darkest-native-mod-objects
+          path: darkest-native-probe/mod_project-ios-arm64.o
+          if-no-files-found: error
