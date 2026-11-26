@@ -1,0 +1,23 @@
+name: Windows Mach-O linker
+on:
+  push:
+    branches: [build/darkest-local-linker-20261126-083547]
+jobs:
+  collect:
+    runs-on: windows-2025
+    steps:
+      - name: Collect the installed LLVM linker
+        shell: pwsh
+        run: |
+          $bin = 'C:/Program Files/LLVM/bin'
+          $lld = Join-Path $bin 'ld64.lld.exe'
+          if (!(Test-Path -LiteralPath $lld)) { $lld = Join-Path $bin 'lld.exe' }
+          New-Item -ItemType Directory -Path artifact | Out-Null
+          Copy-Item -LiteralPath $lld -Destination 'artifact/ld64.lld.exe'
+          & 'artifact/ld64.lld.exe' --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: darkest-local-linker
+          path: artifact/ld64.lld.exe
+          if-no-files-found: error
