@@ -1,0 +1,38 @@
+name: Darkest iOS SDK runtime
+on:
+  push:
+    branches: [build/darkest-ios-20261126-143138]
+jobs:
+  device:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Prepare public source and host shader tools
+        run: |
+          brew install glslang spirv-cross
+          curl --fail --location --retry 3 -o swarc.tar.gz https://codeload.github.com/JTM-rootstorm/SwARc/tar.gz/9170ecc1ebea55ef48a0a7b9c10882711dd3c213
+          mkdir swarc
+          tar -xzf swarc.tar.gz --strip-components=1 -C swarc
+          cp -R darkest-ios-runtime/swarc-overlay/. swarc/
+      - name: Compile the iPhoneOS runtime
+        run: |
+          cmake -S darkest-ios-runtime -B ios-build -G Ninja \
+            -DSWARC="$PWD/swarc" -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+          cmake --build ios-build --target DarkestRuntime --parallel 6
+      - name: Export the SDK runtime for local linking
+        run: |
+          xcrun vtool -show-build ios-build/DarkestRuntime.framework/DarkestRuntime
+          xcrun otool -L ios-build/DarkestRuntime.framework/DarkestRuntime
+          mkdir -p sdk-stage/Darkest.app/Frameworks
+          cp darkest-ios-runtime/Info.plist sdk-stage/Darkest.app/Info.plist
+          ditto ios-build/DarkestRuntime.framework sdk-stage/Darkest.app/Frameworks/DarkestRuntime.framework
+          xcrun plutil -lint sdk-stage/Darkest.app/Info.plist
+          ditto -c -k --keepParent sdk-stage/Darkest.app Darkest-iOS-SDK-runtime.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: darkest-ios-sdk-runtime
+          path: Darkest-iOS-SDK-runtime.zip
+          if-no-files-found: error
