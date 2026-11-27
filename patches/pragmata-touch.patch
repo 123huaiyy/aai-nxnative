@@ -1,0 +1,1879 @@
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index dcd92e9..b6d9e69 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -16136,6 +16136,9 @@ static void draw_multi(const p_multi_draw *m) {
+     g_mdx_range = NULL;
+     g_mdxc.next = NULL;
+ }
++#ifdef DM_PRAGMATA_ULTRAWIDE
++#include "pragmata_ui_viewport.h"
++#endif
+ static void draw_(const p_draw *dw, const p_draw_idx *di);
+ // Diagnostic switch for measuring an upper bound DM_NVN_SKIP_FS=<fragment key>[,<fragment key>...] (none by default): drops all draws of these fragment shaders (the picture will be wrong;
+ // only used in real-device ABA to measure "how much GPU time this class of draws is worth in total"), and the same-process alternating measurement's phase (DM_NVN_UB). Task / mesh
+@@ -16295,6 +16298,20 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
+       if (!(g_ed.ok & ED_SREF) || g_ed.sref != sr || g_ed.sref_b != sb) { enc_r_stencil_ref(en, sr, sb); g_ed.sref = sr; g_ed.sref_b = sb; g_ed.ok |= ED_SREF; } }
+     // Viewport / scissor (clamped within the target size)
+     NSUInteger tw = g_pass.tw, th = g_pass.th;
++#ifdef DM_PRAGMATA_ULTRAWIDE
++    // These draws build the transparent interface and its masks before the engine blends them over the world.
++    // Use a centered 16:9 sub-rectangle in the eventual 21:9 picture for both geometry and clipping.
++    BOOL interface_plane = !S.rast_discard && pragmata_ui_target(
++        pr->sh[0] ? pr->sh[0]->key : NULL, tw, th,
++        g_pass.cfmt[0] == MTLPixelFormatRGBA8Unorm_sRGB || g_pass.cfmt[0] == MTLPixelFormatR8Unorm);
++    if (interface_plane) {
++        static BOOL logged;
++        if (!logged) {
++            MLOG("PRAGMATA: protecting the 16:9 interface on the 21:9 picture");
++            logged = YES;
++        }
++    }
++#endif
+     { MTLViewport v = S.has_vp ? (MTLViewport){S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]} : (MTLViewport){0, 0, tw, th, 0, 1};
+       if (vp_origin_ll()) { v.originY += v.height; v.height = -v.height; }   // the viewport command's recording device origin
+       // Viewport swizzle: NEGATIVE_Y negates clip y, the same as the viewport flipped about its centre; facing is decided after it on the GPU as in Metal, so the winding stays.
+@@ -16302,6 +16319,9 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
+       { uint32_t sw; memcpy(&sw, S.vp_sw[0], 4);
+         if (sw == 0x100) { v.originY += v.height; v.height = -v.height; }
+         else if (sw) RED_ONCE(108, "viewport swizzle %d,%d,%d,%d not implemented (drawn unswizzled)", S.vp_sw[0][0], S.vp_sw[0][1] ^ 2, S.vp_sw[0][2] ^ 4, S.vp_sw[0][3] ^ 6); }
++#ifdef DM_PRAGMATA_ULTRAWIDE
++      if (interface_plane) { v.originX = pragmata_ui_x(v.originX, tw); v.width *= PRAGMATA_UI_WIDTH_SCALE; }
++#endif
+       if (!(g_ed.ok & ED_VP) || memcmp(&g_ed.vp, &v, sizeof v)) { enc_r_viewport(en, v); g_ed.vp = v; g_ed.ok |= ED_VP; } }
+     MTLScissorRect sc = {0, 0, tw, th};
+     if (R.has_sc && !S.rast_discard) {   // raster state cannot suppress vertex storage writes
+@@ -16310,6 +16330,14 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
+         if (x1 <= x0 || y1 <= y0) { PD("Z %llu draw skipped: empty scissor (%d,%d %dx%d, target %lux%lu)", g_stat_pass, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw, (unsigned long)th); return; }
+         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
+     }
++#ifdef DM_PRAGMATA_ULTRAWIDE
++    if (interface_plane) {
++        NSUInteger left = (NSUInteger)floor(pragmata_ui_x(sc.x, tw));
++        NSUInteger right = (NSUInteger)ceil(pragmata_ui_x(sc.x + sc.width, tw));
++        sc.x = left;
++        sc.width = right - left;
++    }
++#endif
+     if (!(g_ed.ok & ED_SC) || memcmp(&g_ed.sc, &sc, sizeof sc)) { enc_r_scissor(en, sc); g_ed.sc = sc; g_ed.ok |= ED_SC; }
+     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK && !S.rast_discard && !g_wl.on) { PD("Z %llu draw skipped: both faces culled", g_stat_pass); return; }
+     { int cu = g_wl.on ? MTLCullModeNone : S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone;   // a line has no faces: its quads are never culled
+@@ -18726,6 +18754,14 @@ static _Atomic uint64_t g_layer_shape, g_screen_shape;   // w | h << 32, 0 = non
+ void mtl_present_layer(uint32_t w, uint32_t h) { atomic_store(&g_layer_shape, (uint64_t)w | (uint64_t)h << 32); }
+ void mtl_present_screen(uint32_t w, uint32_t h) { atomic_store(&g_screen_shape, (uint64_t)w | (uint64_t)h << 32); }
+ static void present_shape(id<MTLTexture> src, double *w, double *h) {
++#ifdef DM_PRAGMATA_ULTRAWIDE
++    // The companion PRAGMATA camera patch projects for 21:9 while the engine still uses its original textures.
++    // Restore that projection's proportions at presentation, also reporting the ratio to the iOS layout.
++    (void)src;
++    *w = 2520;
++    *h = 1080;
++    return;
++#endif
+     uint64_t v = atomic_load(&g_screen_shape);
+     if (v && fabs(((double)src.width / src.height) / ((double)(uint32_t)v / (double)(v >> 32)) - 1) < 0.01) { *w = src.width; *h = src.height; return; }
+     v = atomic_load(&g_layer_shape);
+diff --git a/dm/gfx/nvn/pragmata_ui_viewport.h b/dm/gfx/nvn/pragmata_ui_viewport.h
+new file mode 100644
+index 0000000..f40d43f
+--- /dev/null
++++ b/dm/gfx/nvn/pragmata_ui_viewport.h
+@@ -0,0 +1,19 @@
++// PRAGMATA v196608 screen interface targets, identified from the NVN render pass recordings.
++#pragma once
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++static inline bool pragmata_ui_target(const char *vertex, uint64_t width, uint64_t height, bool ui_format) {
++    if (!vertex || !ui_format || !height || width * 9 != height * 16) return false;
++    return strcmp(vertex, "d84fd24ea0cd67c4_b") == 0   // screen images and text
++        || strcmp(vertex, "0f635c1667f616df_b") == 0   // companion variant of the same program
++        || strcmp(vertex, "9299e20c8df468c3_b") == 0   // interface render group
++        || strcmp(vertex, "9726482004323ffe_b") == 0;  // interface render group with an auxiliary target
++}
++
++#define PRAGMATA_UI_WIDTH_SCALE (16.0 / 21.0)
++
++static inline double pragmata_ui_x(double x, double target_width) {
++    return x * PRAGMATA_UI_WIDTH_SCALE + target_width * (1.0 - PRAGMATA_UI_WIDTH_SCALE) * 0.5;
++}
+diff --git a/dm/ios/Sources/DmGameMenu.h b/dm/ios/Sources/DmGameMenu.h
+index 648c1fa..8929afa 100644
+--- a/dm/ios/Sources/DmGameMenu.h
++++ b/dm/ios/Sources/DmGameMenu.h
+@@ -7,8 +7,14 @@
+ extern "C" {
+ #endif
+ void *dm_game_menu(void);   // GameMenu.swift: a retained UIMenu, rebuilt each time it opens
++bool dm_gear_auto_hide(void);
++void dm_gear_set_auto_hide(bool enabled);
+ int dm_pad_layout(void);   // DmGamepad.m: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+ bool dm_pad_layout_offered(int layout);   // Tap only in handheld mode
++bool dm_touch_controls_hidden(void);
++void dm_touch_controls_set_hidden(bool hidden);
++bool dm_orbit_edit_available(void);
++void dm_orbit_edit_begin(void);
+ void dm_pad_layout_set(int layout);   // releases every touch first, and is saved for the next start
+ int dm_pad_layout_saved(void);   // the launcher: the layout the next start takes (saved, else the profile's)
+ void dm_pad_layout_store(int layout);   // the launcher: lays it out and saves it as picked
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index e9a1aca..57f4cb2 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -132,12 +132,25 @@ static const CGFloat
+     K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
+     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
++static NSString *const k_hide_controls_key = @"DmHideAllTouchControlsV1";
+ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
+ int dm_opmode(void);   // hle_oe.c: 0 = handheld
+ 
+ @interface DmGamepad : UIView
+ - (void)arrange:(DmLayout)layout;
+ - (BOOL)menuTakes:(CGPoint)p;
++- (BOOL)gearHidesAutomatically;
++- (void)setGearHidesAutomatically:(BOOL)value;
++- (BOOL)canEditOrbit;
++- (BOOL)hideAllTouchControls;
++- (void)setHideAllTouchControls:(BOOL)hide;
++- (void)updateTouchVisibility;
++- (void)beginOrbitEditor;
++- (void)loadOrbitLayout;
++- (CGPoint)oDefaultKey:(int)b;
++- (void)applyOrbitOpacity;
++- (void)layoutOrbitEditor;
++- (void)endOrbitEditorSaved:(BOOL)save;
+ @end
+ // The menu button: a UIButton whose menu is the in-game menu (UIKit draws it and takes the touches while it is open). Its hit circle is larger than the drawn one, and a key nearer
+ // to the touch wins (− / + sit beside it), so it asks the pad
+@@ -149,7 +162,11 @@ int dm_opmode(void);   // hle_oe.c: 0 = handheld
+ static __weak DmGamepad *g_view;
+ static void pads_start(void);   // Physical controllers, below
+ 
++#include "DmTransientGear.inc"
++#include "DmPragmataArt.inc"
++
+ @implementation DmGamepad {
++    DmTransientGear *_transientGear;
+     NSMapTable<UITouch *, NSNumber *> *_owner;     // touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
+     UITouch *_stick[2]; CGPoint _stickNow[2];      // the touch holding each stick and where it is now (0 left, 1 right)
+     CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
+@@ -164,6 +181,7 @@ static void pads_start(void);   // Physical controllers, below
+     BOOL _stickShown;                              // the left stick was held at the last refresh
+     BOOL _full, _tap;                              // the 3D layout / the Tap layout is current
+     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
++    BOOL _hideAllTouchControls;                       // player hides virtual inputs even without a detected physical pad
+     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
+     DmLayout _layout;
+     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+@@ -177,8 +195,17 @@ static void pads_start(void);   // Physical controllers, below
+     BOOL _zlLocked; double _zlDown; UITouch *_zlTouch;   // ZL locked on by a short tap; the touch pressing it and when it came down
+     UITouch *_hubAim;                              // the ZR hub's touch, which drives the right stick from where it landed
+     UITouch *_rsTouch; double _lookTap; CGPoint _lookTapAt;   // a double tap in the aim area holds RS; the last tap there
+-    CGPoint _lCentre;                              // the floating left stick's centre while held
++    CALayer *_art[B_N + 2], *_stickBaseArt, *_stickCapArt;
+     NSTimer *_dim; BOOL _dimmed;                   // auto-dim
++    NSMutableDictionary<NSString *, NSDictionary *> *_orbitPlacement;
++    NSDictionary *_orbitBeforeEdit;
++    UIView *_orbitEditor, *_orbitCanvas;
++    UIStackView *_orbitPanel;
++    CAShapeLayer *_orbitSelection;
++    UILabel *_orbitSelectedName;
++    UISlider *_orbitSize, *_orbitOpacity;
++    NSInteger _orbitSelected;
++    CGPoint _orbitDragOrigin;
+ }
+ 
+ static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
+@@ -265,6 +292,13 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+             _knobLip = line(_knob, [UIColor colorWithWhite:1 alpha:0.28], 1);
+             _dpadGuide = line(_controls, k_guide, 1); [_controls insertSublayer:_dpadGuide atIndex:0];   // under every key
+             for (int i = 0; i < 4; i++) _dchev[i] = line(_key[B_LEFT + i], k_text, 1.6);
++            for (int b = 0; b < B_N + 2; b++) {
++                CAShapeLayer *parent = b < B_N ? _key[b] : b == B_N ? _od : _fire2;
++                _art[b] = [CALayer layer]; _art[b].contentsGravity = kCAGravityResizeAspect;
++                [parent insertSublayer:_art[b] atIndex:0];
++            }
++            _stickBaseArt = [CALayer layer]; [_ring addSublayer:_stickBaseArt];
++            _stickCapArt = [CALayer layer]; [_knob addSublayer:_stickCapArt];
+             _lockHint = label(_controls, @"LOCKED"); _lockHint.hidden = YES; _lockHint.foregroundColor = k_micro.CGColor;   // no HACKING or RUN text (the player's choice, V7)
+         }
+         _menu = [DmMenuButton buttonWithType:UIButtonTypeCustom];
+@@ -276,10 +310,14 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+         __weak DmGamepad *weakSelf = self;
+         [_menu addAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [weakSelf reset]; }] forControlEvents:UIControlEventMenuActionTriggered];   // the menu opens: release every key and touch first
+         [self addSubview:_menu];
++        _transientGear = [[DmTransientGear alloc] initWithPad:self button:_menu];
++        _hideAllTouchControls = [NSUserDefaults.standardUserDefaults boolForKey:k_hide_controls_key];
++        [self updateTouchVisibility];
+         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+         int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
+         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
+         _full = l == 1; _tap = l == 2;
++        if (DM_GAME_TOUCH_STYLE) [self loadOrbitLayout];
+         [self applyLayout];
+         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+         [nc addObserver:self selector:@selector(padsChanged:) name:GCControllerDidConnectNotification object:nil];
+@@ -291,6 +329,23 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+     }
+     return self;
+ }
++- (BOOL)gearHidesAutomatically { return _transientGear.isAutomatic; }
++- (void)setGearHidesAutomatically:(BOOL)value { [_transientGear setAutomatic:value]; }
++
++- (BOOL)hideAllTouchControls { return _hideAllTouchControls; }
++- (void)setHideAllTouchControls:(BOOL)hide {
++    if (_hideAllTouchControls == hide) return;
++    [self reset];
++    _hideAllTouchControls = hide;
++    [NSUserDefaults.standardUserDefaults setBool:hide forKey:k_hide_controls_key];
++    [self updateTouchVisibility];
++    [self wake];
++}
++- (void)updateTouchVisibility {
++    _controls.hidden = _padOff || (_hideAllTouchControls && !_orbitEditor);
++    [_transientGear setForcedAutomatic:_padOff || _hideAllTouchControls];
++}
++
+ - (void)applyLayout {   // show / hide the controls for the current layout
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+     BOOL o = self.orbit;
+@@ -317,34 +372,18 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+     if (!_touchFeedback) { _touchFeedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; [_touchFeedback prepare]; }
+ }
+ 
+-// ---- Orbit (profile touch_style orbit: PRAGMATA) ----
+-// A two-thumb landscape layout built around the game's controls: the ZR fire hub under the right thumb with A B X Y around it at their Switch places (hacking moves the cursor
+-// with them while ZL is held: X up, B down, Y left, A right), R (dodge) above them on the right thumb's arc; ZL (aim; held, or locked on by a tap, for hacking; while it is on, a second fire key (ZR) shows at the top left for the left thumb), the Overdrive
+-// key (LS + RS) and the D-pad (weapons) on the left thumb's arc; a floating left stick that runs (LS) past its rim; the right half of the screen aims (a double tap there holds RS).
+-// White line icons with letter tags, no drop shadows and no decorative lines (no arcs, rings or aim marker: the player asked for the keys alone), auto-dim after 4 s with
+-// nothing held. An arc position is an angle from the bottom edge and a radius from the corner
+-// rectangle's bottom corner. Portrait and the separated layouts keep the classic places with the white look. Every value is in u, as above
++// PRAGMATA's sci-fi touch layout in the landscape overlay. Positions are anchored to the safe edges.
+ static const CGFloat
+-    O_ARC = 230,                                                                // the thumbs' arc: radius from each bottom corner (keys only: no line is drawn)
+-    O_HUB_X = 100, O_HUB_Y = 100, O_HUB_R = 30, O_HUB_HIT = 1.15,               // ZR hub: centre from the right and the bottom, radius, hit radius (times the radius)
+-    O_GAP = 62, O_KEY_R = 24, O_KEY_HIT = 1.2,                                  // A B X Y: distance from the hub, radius, hit radius
+-    O_R_ANGLE = 70, O_R_ARC = 240, O_R_R = 26,                                  // R: on the right arc, a little outside it
+-    O_RIGHT_IN = 30,                                                            // the right thumb's keys (hub, A B X Y, R) this much nearer the centre than the design's places
+-    O_ZL_ANGLE = 40, O_ZL_R = 30, O_ZL_HIT = 1.3, O_OD_ANGLE = 68, O_OD_R = 22,  // ZL and Overdrive on the left arc
+-    O_DPAD_ANGLE = 14, O_DPAD_R = 50, O_ARM_W = 18, O_ARM_IN = 11,              // D-pad on the left arc (3D layout only); 38 / 14 / 9 until V22, bigger at the player's request
+-    O_STICK_R = 66, O_KNOB_R = 29, O_RUN = 1.2, O_ZONE_W = 0.42, O_ZONE_TOP = 110,   // floating stick: ring, knob; LS past this times the ring; its area: the left 42 % of the width, below 110
+-    O_LOOK_X = 0.5,                                                             // aim area: the right half
+-    O_PILL_DX = 44, O_PILL_Y = 20, O_PILL_R = 13.6, O_MENU_R = 12,              // − / + beside the menu at the top centre
+-    O_DPAD_HEAD_W = 0.42, O_DPAD_HEAD_IN = 0.6, O_DPAD_HEAD_OUT = 0.86, O_DPAD_DX = 16, O_DPAD_DY = 12,          // D-pad arrowheads (Ocarina of Time port's): half-width (times the arm's), base and tip (times its radius); no circle around it since V23
+-    O_TOP_IN = 70,                                                              // − menu + at the top right: the menu this far in from the safe area's right edge (the player's choice)
+-    O_L_X = 44, O_L_Y = 40, O_L_R = 18,                                         // L (3D layout only; the game gives it no action)
+-    O_F2_X = 132, O_F2_Y = 72, O_F2_R = 38,                                     // the second fire key (ZR), right of L at the top left: shown while ZL is on, for the left thumb; larger than the hub
+-    O_ZL_TAP = 0.25,                                                            // ZL: a press shorter than this locks it on (a tap); a longer one is held and let go
+-    O_SIZE = 115,                                                               // the keys' size, % (a little larger than the design's first sizes)
+-    O_TAP2 = 0.28, O_TAP2_D = 40,                                               // double tap: within 280 ms and 40 u
+-    O_DIM_AFTER = 4, O_DIM = 0.45, O_DIM_FADE = 0.35;                           // auto-dim: after 4 s, to 45 %, over 350 ms
+-enum { B_OD = B_N, B_F2 = B_N + 1 };   // the Overdrive key's index in the Orbit arrays and in a C_BTN owner; the second fire key's in the Orbit arrays
+-static CGPoint arcAt(CGRect s, int right, CGFloat deg, CGFloat r) { CGFloat a = deg * M_PI / 180; return CGPointMake(right ? CGRectGetMaxX(s) - r * cos(a) : CGRectGetMinX(s) + r * cos(a), CGRectGetMaxY(s) - r * sin(a)); }
++    O_ZR_R = 36, O_HUB_HIT = 1.15, O_GAP = 40, O_KEY_R = 23, O_KEY_HIT = 1.16,
++    O_R_R = 17, O_L_R = 16, O_ZL_R = 26, O_ZL_HIT = 1.25, O_OD_R = 22, O_DPAD_R = 47,
++    O_STICK_R = 68, O_KNOB_R = 32, O_RUN = 1.2, O_LOOK_X = 0.5, O_MENU_R = 16, O_PILL_R = 11, O_F2_R = 23,
++    O_ZL_TAP = 0.25, O_SIZE = 100, O_TAP2 = 0.28, O_TAP2_D = 40,
++    O_DIM_AFTER = 4, O_DIM = 0.45, O_DIM_FADE = 0.35;
++enum { B_OD = B_N, B_F2 = B_N + 1, B_ORBIT_STICK, B_ORBIT_DPAD };
++static CGPoint orbitDefaultPoint(CGRect safe, BOOL right, CGFloat inset, CGFloat heightFraction) {
++    CGFloat x = right ? CGRectGetMaxX(safe) - inset : CGRectGetMinX(safe) + inset;
++    return CGPointMake(x, CGRectGetMinY(safe) + safe.size.height * heightFraction);
++}
+ - (BOOL)orbit { return DM_GAME_TOUCH_STYLE && !_layout.separated && self.bounds.size.width > self.bounds.size.height; }
+ // Orbit's unit for its keys: u times the size, O_SIZE % by default (DM_TOUCH_SIZE in Documents/env.txt, 80-140 %). Keys, their places from the corners, gaps and the stick grow
+ // together from the bottom corners; the aim and move areas and the double tap's distance stay in u. Outside the Orbit layout it is u
+@@ -372,42 +411,65 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+ }
+ - (CGPoint)faceCenter { CGRect s = self.corner; CGFloat u = self.u;
+     if (self.portraitControls) return [self portraitThumbCenter:YES];
+-    if (self.orbit) return [self oKey:B_ZR];   // around the hub
++    if (self.orbit) return orbitDefaultPoint(self.safe, YES, 96 * self.ou, 0.51);
+     CGFloat edge = _layout.separated ? self.faceGap + self.faceHitR : 0;
+     return side(s, 1, MAX(K_FACE_X * u, edge), CGRectGetMaxY(s) - MAX(K_PAD_Y * u, edge)); }
+ - (CGFloat)faceGap { return self.orbit ? O_GAP * self.ou : K_FACE_GAP * self.u; }
+ - (CGFloat)faceR { return self.orbit ? O_KEY_R * self.ou : K_FACE_R * self.u; }
+ - (CGFloat)faceHitR { return self.orbit ? MAX(self.faceR * O_KEY_HIT, 22) : MAX(self.faceR * 1.25, _layout.separated ? 22 : 0); }
+-- (CGPoint)oKey:(int)b {   // Orbit: the centre of a key other than A B X Y and the D-pad
+-    CGRect s = self.corner, f = self.safe; CGFloat u = self.ou;
++static NSString *orbitPlacementKey(NSInteger b) { return [@(b) stringValue]; }
++
++- (NSDictionary *)orbitPlacement:(NSInteger)b { return _orbitPlacement[orbitPlacementKey(b)]; }
++- (CGFloat)orbitScale:(NSInteger)b {
++    NSNumber *scale = self.orbit ? [self orbitPlacement:b][@"scale"] : nil;
++    return scale ? scale.doubleValue : 1;
++}
++
++- (CGPoint)orbitPosition:(NSInteger)b fallback:(CGPoint)fallback {
++    NSDictionary *entry = self.orbit ? [self orbitPlacement:b] : nil;
++    CGRect safe = self.safe;
++    if (!entry[@"x"] || !entry[@"y"] || CGRectIsEmpty(safe)) return fallback;
++    return CGPointMake(CGRectGetMinX(safe) + [entry[@"x"] doubleValue] * CGRectGetWidth(safe),
++                       CGRectGetMinY(safe) + [entry[@"y"] doubleValue] * CGRectGetHeight(safe));
++}
++
++- (CGPoint)oDefaultKey:(int)b {
++    CGRect f = self.safe; CGFloat u = self.ou;
+     switch (b) {
+-    case B_ZR: return CGPointMake(CGRectGetMaxX(s) - (O_HUB_X + O_RIGHT_IN) * u, CGRectGetMaxY(s) - O_HUB_Y * u);   // A B X Y go with it (facePos)
+-    case B_R: { CGPoint r = arcAt(s, 1, O_R_ANGLE, O_R_ARC * u); r.x -= O_RIGHT_IN * u; return r; }
+-    case B_ZL: return arcAt(s, 0, O_ZL_ANGLE, O_ARC * u);
+-    case B_OD: return arcAt(s, 0, O_OD_ANGLE, O_ARC * u);
+-    case B_L: return CGPointMake(CGRectGetMinX(f) + O_L_X * u, CGRectGetMinY(f) + O_L_Y * u);
+-    case B_F2: return CGPointMake(CGRectGetMinX(f) + O_F2_X * u, CGRectGetMinY(f) + O_F2_Y * u);
+-    default: return CGPointMake(CGRectGetMaxX(f) - O_TOP_IN * u + (b == B_PLUS ? O_PILL_DX : -O_PILL_DX) * u, CGRectGetMinY(f) + O_PILL_Y * u);   // top right: − left of the menu, + right of it
++    case B_ZR: return orbitDefaultPoint(f, YES, 66 * u, 0.82);
++    case B_R: return orbitDefaultPoint(f, YES, 169 * u, 0.70);
++    case B_ZL: return orbitDefaultPoint(f, NO, 33 * u, 0.38);
++    case B_OD: return orbitDefaultPoint(f, YES, 96 * u, 0.24);
++    case B_L: return orbitDefaultPoint(f, NO, 31 * u, 0.15);
++    case B_F2: return orbitDefaultPoint(f, NO, 86 * u, 0.15);
++    default: return CGPointMake(CGRectGetMaxX(f) - 23 * u, CGRectGetMinY(f) + (b == B_PLUS ? 60 : 90) * u);
+     }
+ }
+-- (CGFloat)oKeyR:(int)b { return (b == B_ZR ? O_HUB_R : b == B_R ? O_R_R : b == B_ZL ? O_ZL_R : b == B_OD ? O_OD_R : b == B_L ? O_L_R : b == B_F2 ? O_F2_R : O_PILL_R) * self.ou; }
++- (CGPoint)oKey:(int)b { return [self orbitPosition:b fallback:[self oDefaultKey:b]]; }
++- (CGFloat)oKeyR:(int)b { return (b == B_ZR ? O_ZR_R : b == B_R ? O_R_R : b == B_ZL ? O_ZL_R : b == B_OD ? O_OD_R : b == B_L ? O_L_R : b == B_F2 ? O_F2_R : O_PILL_R) * self.ou * [self orbitScale:b]; }
++- (CGFloat)faceRadiusFor:(int)b { return self.faceR * [self orbitScale:b]; }
++- (CGFloat)faceHitRadiusFor:(int)b { return self.orbit ? MAX([self faceRadiusFor:b] * O_KEY_HIT, 22) : self.faceHitR; }
+ - (CGFloat)oKeyDistance:(int)b point:(CGPoint)p {   // distance / hit radius (at least 22 points, half of a 44-point target)
+     CGPoint c = [self oKey:b]; CGFloat r = [self oKeyR:b] * (b == B_ZR || b == B_F2 ? O_HUB_HIT : b == B_ZL ? O_ZL_HIT : 1.35);
+     return hypot(p.x - c.x, p.y - c.y) / MAX(r, 22);
+ }
+ - (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+-    switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
++    CGPoint defaults[] = {CGPointMake(c.x + g, c.y), CGPointMake(c.x, c.y + g),
++                          CGPointMake(c.x, c.y - g), CGPointMake(c.x - g, c.y)};
++    return [self orbitPosition:b fallback:defaults[b - B_A]];
++}
+ - (CGPoint)stickHome {
+     if (self.portraitControls) {
+         CGPoint p = [self portraitThumbCenter:NO];
+         if (_full) p.x -= self.dpadR + 6 * self.u;
+         return p;
+     }
++    if (self.orbit) return [self orbitPosition:B_ORBIT_STICK fallback:orbitDefaultPoint(self.safe, NO, 86 * self.ou, 0.70)];
+     CGRect s = self.corner;
+-    return side(s, 0, K_STICK_X * self.ou, CGRectGetMaxY(s) - K_PAD_Y * self.ou);   // ou is u outside the Orbit layout
++    return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u);
+ }
+-- (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.orbit && _stick[0] ? _lCentre : self.stickHome; }   // Orbit: the left stick floats to where its touch landed
+-- (CGFloat)stickR:(int)i { return i ? K_RSTICK_R * self.u : self.orbit ? O_STICK_R * self.ou : K_STICK_R * self.u; }
++- (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
++- (CGFloat)stickR:(int)i { return i ? K_RSTICK_R * self.u : self.orbit ? O_STICK_R * self.ou * [self orbitScale:B_ORBIT_STICK] : K_STICK_R * self.u; }
+ - (BOOL)inRightArea:(CGPoint)p { CGRect b = _layout.controls; return p.x >= CGRectGetMaxX(b) - b.size.width * (self.orbit ? 1 - O_LOOK_X : K_RSWIPE); }
+ - (CGPoint)dpadCenter {
+     if (self.portraitControls) {
+@@ -416,10 +478,10 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
+         return p;
+     }
+     CGRect s = self.corner; CGFloat u = self.u;
+-    if (self.orbit) { CGPoint p = arcAt(s, 0, O_DPAD_ANGLE, O_ARC * self.ou); p.x += O_DPAD_DX * self.ou; p.y -= O_DPAD_DY * self.ou; return p; }   // V23: moved up and right for its larger size (its down arm clear of the home bar, its up arm clear of ZL)
++    if (self.orbit) return [self orbitPosition:B_ORBIT_DPAD fallback:orbitDefaultPoint(self.safe, NO, 118 * self.ou, 0.35)];
+     return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u);
+ }
+-- (CGFloat)dpadR { return self.orbit ? O_DPAD_R * self.ou : K_DPAD_R * self.u; }
++- (CGFloat)dpadR { return self.orbit ? O_DPAD_R * self.ou * [self orbitScale:B_ORBIT_DPAD] : K_DPAD_R * self.u; }
+ static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
+ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
+ - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
+@@ -431,7 +493,11 @@ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
+ - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
+     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + MAX(K_PILL_Y * u, _layout.separated ? 14 : 0));   // − on the left, + on the right
+     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+-- (CGPoint)menuCenter { CGRect s = self.safe; return CGPointMake(self.orbit ? CGRectGetMaxX(s) - O_TOP_IN * self.ou : CGRectGetMidX(s), CGRectGetMinY(s) + MAX(self.orbit ? O_PILL_Y * self.ou : K_PILL_Y * self.u, _layout.separated ? 14 : 0)); }
++- (CGPoint)menuCenter {
++    CGRect s = self.safe;
++    if (self.orbit) return CGPointMake(CGRectGetMaxX(s) - 23 * self.ou, CGRectGetMinY(s) + 23 * self.ou);
++    return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + MAX(K_PILL_Y * self.u, _layout.separated ? 14 : 0));
++}
+ - (CGFloat)menuR { return self.orbit ? O_MENU_R * self.ou : K_MENU_R * self.u; }
+ 
+ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
+@@ -471,8 +537,8 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y);
+     return hit < 0 || d < [self buttonDistance:hit point:p];
+ }
+ - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
+-    uint64_t m = 0; CGFloat r = self.faceHitR;
+-    for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
++    uint64_t m = 0;
++    for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= [self faceHitRadiusFor:b]) m |= 1ull << b;
+     return m;
+ }
+ - (uint64_t)dpadAt:(CGPoint)p {   // 8 directions: 45° each, diagonals press two keys; a small centre circle counts as none
+@@ -554,12 +620,11 @@ int front_web_touch(void);
+     CGFloat best = 1; int kind = C_NONE, d;
+     CGFloat z = [self oKeyDistance:B_ZL point:p]; if (z <= best) { best = z; kind = C_ZL; }
+     CGFloat h = [self oKeyDistance:B_ZR point:p]; if (h < best) { best = h; kind = C_HUB; }
+-    CGFloat f = CGFLOAT_MAX; for (d = B_A; d <= B_Y; d++) f = MIN(f, dist(p, [self facePos:d]) / self.faceHitR);
++    CGFloat f = CGFLOAT_MAX; for (d = B_A; d <= B_Y; d++) f = MIN(f, dist(p, [self facePos:d]) / [self faceHitRadiusFor:d]);
+     if (f < best) { best = f; kind = C_FACE; }
+     if (_full) { CGFloat g = dist(p, self.dpadCenter) / MAX(self.dpadR * K_DPAD_GRAB, 22); if (g < best) { best = g; kind = C_DPAD; } }
+     if (kind != C_NONE) return kind;
+-    CGRect b = _layout.controls;
+-    if (!_stick[0] && p.x < CGRectGetMinX(b) + b.size.width * O_ZONE_W && p.y > CGRectGetMinY(self.safe) + O_ZONE_TOP * self.u) { *key = 0; return C_STICK; }
++    if (!_stick[0] && dist(p, self.stickHome) <= [self stickR:0] * K_STICK_GRAB) { *key = 0; return C_STICK; }
+     if (!_stick[1] && [self inRightArea:p]) { *key = 1; return C_STICK; }
+     return C_NONE;
+ }
+@@ -580,11 +645,7 @@ int front_web_touch(void);
+     case C_FACE: [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; return;
+     case C_DPAD: [_owner setObject:@(C_DPAD) forKey:t]; return;
+     case C_STICK:
+-        if (key == 0) {   // the stick centres on the touch, the ring kept inside the move area and the corner rectangle
+-            CGRect c = self.corner, b = _layout.controls; CGFloat R = [self stickR:0];
+-            CGFloat x0 = CGRectGetMinX(c) + R, x1 = CGRectGetMinX(b) + b.size.width * O_ZONE_W - R, y0 = CGRectGetMinY(self.safe) + O_ZONE_TOP * u + R, y1 = CGRectGetMaxY(c) - R;
+-            _lCentre = CGPointMake(fmin(fmax(p.x, x0), fmax(x0, x1)), fmin(fmax(p.y, y0), fmax(y0, y1)));
+-        } else {   // aim: a second touch-down within O_TAP2 and O_TAP2_D of the last one holds RS (reset camera) while it is down; the camera still turns
++        if (key == 1) {   // double tap mirrors the right-stick click
+             if (now - _lookTap < O_TAP2 && dist(p, _lookTapAt) < O_TAP2_D * u) _rsTouch = t;
+             _lookTap = now; _lookTapAt = p; _rCentre = p;
+         }
+@@ -599,7 +660,7 @@ int front_web_touch(void);
+ }
+ - (void)armDim {
+     static int off = -1; if (off < 0) { const char *e = getenv("DM_TOUCH_DIM"); off = e && !atoi(e); }
+-    if (!DM_GAME_TOUCH_STYLE || off || _owner.count || _zlLocked || _padOff) return;
++    if (!DM_GAME_TOUCH_STYLE || off || _owner.count || _zlLocked || _padOff || _hideAllTouchControls || _orbitEditor) return;
+     [_dim invalidate]; __weak DmGamepad *w = self;
+     _dim = [NSTimer scheduledTimerWithTimeInterval:O_DIM_AFTER repeats:NO block:^(NSTimer *tm) { (void)tm; [w dimNow]; }];
+ }
+@@ -609,7 +670,7 @@ int front_web_touch(void);
+     _controls.opacity = O_DIM; [_controls addAnimation:a forKey:@"dim"]; _dimmed = YES;
+ }
+ - (BOOL)controlAt:(CGPoint)p {
+-    if (_padOff || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return NO;
++    if (_padOff || _hideAllTouchControls || (_layout.separated && !CGRectContainsPoint(_layout.controls, p))) return NO;
+     if (_tap) return NO;
+     if (self.orbit) { int key; return [self orbitKindAt:p key:&key] != C_NONE; }
+     if ([self btnAt:p] >= 0) return YES;
+@@ -625,7 +686,7 @@ int front_web_touch(void);
+ - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+     BOOL game = NO;
+     for (UITouch *t in ts) {
+-        if (_padOff) { game |= [self gameBegin:t]; continue; }
++        if (_padOff || _hideAllTouchControls) { game |= [self gameBegin:t]; continue; }
+         CGPoint p = [t locationInView:self];
+         if (_layout.separated && !CGRectContainsPoint(_layout.controls, p)) { game |= [self gameBegin:t]; continue; }
+         if (DM_GAME_TOUCH_STYLE) [self wake];
+@@ -747,55 +808,84 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {   // Orbit: a co
+     CGRect r = [self pillRect:b]; return CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
+ }
+ - (CGFloat)keyRadius:(int)b {
+-    if (b >= B_A && b <= B_Y) return self.faceR;
++    if (b >= B_A && b <= B_Y) return [self faceRadiusFor:b];
+     if (self.orbit || b >= B_OD) return [self oKeyR:b];
+     if (isDrop(b)) return [self dropR:b];
+     if (isClick(b)) return K_CLICK_R * self.u;
+     return [self pillRect:b].size.height / 2;
+ }
+-// Orbit's shapes over the classic ones (in layoutSubviews' transaction): in landscape its places, and in every layout the line icons and letter tags (12 u tall, 13 or 17 u wide,
+-// at 0.7 r right and below the key's centre)
+ - (void)orbitLayout:(CGFloat)u {
+-    BOOL o = self.orbit; CGFloat scale = MAX(self.traitCollection.displayScale, 1);
++    BOOL orbit = self.orbit;
++    BOOL artwork = orbit && pragmataSprite(PTarget) != nil;
++    CGFloat scale = MAX(self.traitCollection.displayScale, 1);
+     [self applyLayout];
+-    if (o) {
+-        static const int ob[] = {B_ZL, B_ZR, B_R, B_L, B_MINUS, B_PLUS};
+-        for (int i = 0; i < 6; i++) setPath(_key[ob[i]], circlePath([self oKey:ob[i]], [self oKeyR:ob[i]]));
+-        setPath(_od, circlePath([self oKey:B_OD], [self oKeyR:B_OD]));
+-        static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // four arrow tabs pointed at the centre
+-        CGPoint dc = self.dpadCenter; CGFloat dR = self.dpadR;
+-        for (int i = 0; i < 4; i++) {   // softer arm corners; in each arm a chevron pointing out, two thirds of the way along it
+-            setPath(_key[arms[i].b], armPath(dc, dR, O_ARM_W * u, O_ARM_IN * u, arms[i].angle, 7 * u));
+-            CGFloat hw = O_ARM_W * u * O_DPAD_HEAD_W, cs = cos(arms[i].angle), sn = sin(arms[i].angle);   // a solid arrowhead pointing out, as the Ocarina of Time port draws its D-pad
+-            CGPoint v[3] = {{0, -O_DPAD_HEAD_OUT * dR}, {hw, -O_DPAD_HEAD_IN * dR}, {-hw, -O_DPAD_HEAD_IN * dR}};
+-            CGMutablePathRef cp = CGPathCreateMutable();
+-            for (int k = 0; k < 3; k++) { CGPoint q = CGPointMake(dc.x + v[k].x * cs - v[k].y * sn, dc.y + v[k].x * sn + v[k].y * cs); if (k) CGPathAddLineToPoint(cp, NULL, q.x, q.y); else CGPathMoveToPoint(cp, NULL, q.x, q.y); }
+-            CGPathCloseSubpath(cp); _dchev[arms[i].b - B_LEFT].path = cp; CGPathRelease(cp);
+-            _dchev[arms[i].b - B_LEFT].lineWidth = 0; _dchev[arms[i].b - B_LEFT].strokeColor = nil;
++    static const PragmataSprite sprites[B_N + 2] = {
++        [B_A] = PBlade, [B_B] = PCycle, [B_X] = PRun, [B_Y] = PShield,
++        [B_LS] = PArtNone, [B_RS] = PArtNone, [B_L] = PPulse, [B_R] = PReload,
++        [B_ZL] = PTarget, [B_ZR] = PShot, [B_PLUS] = PArtNone, [B_MINUS] = PArtNone,
++        [B_LEFT] = PGrenade, [B_UP] = PHeal, [B_RIGHT] = PBattery, [B_DOWN] = PSupply,
++        [B_OD] = POverdrive, [B_F2] = PShot,
++    };
++    for (int b = 0; b <= B_F2; b++) {
++        CGPoint c;
++        CGFloat r;
++        BOOL direction = b >= B_LEFT && b <= B_DOWN;
++        if (direction) {
++            const CGPoint offsets[] = {{-1, 0}, {0, -1}, {1, 0}, {0, 1}};
++            CGPoint offset = offsets[b - B_LEFT];
++            c = self.dpadCenter;
++            CGFloat d = self.dpadR * 0.62;
++            c.x += offset.x * d; c.y += offset.y * d;
++            r = self.dpadR * 0.32;
++        } else {
++            c = [self keyCentre:b]; r = [self keyRadius:b];
++        }
++        CAShapeLayer *plate = b == B_OD ? _od : b == B_F2 ? _fire2 : _key[b];
++        if (orbit) setPath(plate, orbitOctagon(c, r));
++        UIImage *sprite = artwork && sprites[b] != PArtNone ? pragmataSprite(sprites[b]) : nil;
++        _art[b].contents = sprite ? (__bridge id)sprite.CGImage : nil;
++        _art[b].hidden = !sprite;
++        CGPoint iconCenter = c;
++        if (!direction && artwork && sprite) iconCenter.y -= r * 0.14;
++        _art[b].frame = orbitSquare(iconCenter, r * (b == B_ZR || b == B_F2 ? 0.66 : 0.57));
++        if (_icon[b]) {
++            setPath(_icon[b], iconPath(b == B_F2 ? B_ZR : b, c, r * 0.5));
++            CATextLayer *text = b == B_OD ? _odLabel : b == B_F2 ? _fire2Label : _label[b];
++            if (b == B_OD) text.string = artwork ? @"LS+RS" : @"OD";
++            if (artwork) {
++                _tag[b].path = NULL;
++                CGPoint label = CGPointMake(c.x, sprite ? c.y + 0.68 * r : c.y);
++                placeLabel(text, label, b == B_PLUS || b == B_MINUS ? 13 * u : MIN(r * 0.60, 10 * u));
++            } else {
++                CGFloat unit = u * [self orbitScale:b], h = 12 * unit;
++                NSString *title = text.string;
++                CGFloat w = (title.length > 1 ? 17 : 13) * unit;
++                CGPoint tag = CGPointMake(c.x + 0.7 * r, c.y + 0.7 * r);
++                setPath(_tag[b], CGPathCreateWithRoundedRect(CGRectMake(tag.x - w / 2, tag.y - h / 2, w, h), h / 2, h / 2, NULL));
++                placeLabel(text, tag, 9.5 * unit);
++            }
++            if (text.contentsScale != scale) { text.contentsScale = scale; [text setNeedsDisplay]; }
+         }
+-        _dpadGuide.path = NULL;   // no circle around it (the player's choice, V23)
+-        CGPoint zl = [self oKey:B_ZL];
+-        placeLabel(_lockHint, CGPointMake(zl.x, zl.y - [self oKeyR:B_ZL] - 8 * u), 7.5 * u); _lockHint.contentsScale = scale;
+-        setPath(_fire2, circlePath([self oKey:B_F2], [self oKeyR:B_F2])); _fire2.lineWidth = 2.4;   // drawn like the hub
+-        CGFloat k = O_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k); setPath(_knob, circlePath(CGPointMake(k, k), k));
+-        // the stick as the Ocarina of Time port draws it (V23, the player's choice; V7-V22 had an analog-nub knob): a plain translucent disc with a thin white outline and a soft
+-        // shadow, in a faint ring; nothing inside the knob
+-        _knobIn.hidden = YES; _knobShade.hidden = YES; _knobLip.hidden = YES;
+-        _knob.lineWidth = 1.5; _knob.strokeColor = k_okLine.CGColor;
+-        _knob.shadowColor = UIColor.blackColor.CGColor; _knob.shadowOpacity = 0.2f; _knob.shadowRadius = 3; _knob.shadowOffset = CGSizeMake(0, 1);
+-        CGPathRef ks = circlePath(CGPointMake(k, k), k); _knob.shadowPath = ks; CGPathRelease(ks);
+     }
+-    _key[B_ZR].lineWidth = o ? 2.4 : 1.5;   // the hub stands out in bright rooms
+-    for (int b = 0; b <= B_F2; b++) { if (!_icon[b] || (b == B_F2 && !o)) continue;
+-        CGPoint c = [self keyCentre:b]; CGFloat r = [self keyRadius:b];
+-        setPath(_icon[b], iconPath(b == B_F2 ? B_ZR : b, c, r * 0.5)); _icon[b].shadowPath = NULL;   // the second fire key: the hub's crosshair
+-        CATextLayer *t = b == B_OD ? _odLabel : b == B_F2 ? _fire2Label : _label[b]; NSString *str = t.string; CGFloat w = (str.length > 1 ? 17 : 13) * u, h = 12 * u;
+-        CGPoint tc = CGPointMake(c.x + 0.7 * r, c.y + 0.7 * r);
+-        setPath(_tag[b], CGPathCreateWithRoundedRect(CGRectMake(tc.x - w / 2, tc.y - h / 2, w, h), h / 2, h / 2, NULL)); _tag[b].shadowPath = NULL;
+-        placeLabel(t, tc, 9.5 * u); if (t.contentsScale != scale) { t.contentsScale = scale; [t setNeedsDisplay]; }
++    if (orbit) {
++        CGPoint aim = [self oKey:B_ZL]; aim.y -= [self oKeyR:B_ZL] + 8 * u;
++        placeLabel(_lockHint, aim, 7.5 * u); _lockHint.contentsScale = scale;
++        CGFloat cap = O_KNOB_R * u * [self orbitScale:B_ORBIT_STICK];
++        _knob.bounds = CGRectMake(0, 0, 2 * cap, 2 * cap);
++        _stickCapArt.frame = _knob.bounds;
++        setPath(_knob, circlePath(CGPointMake(cap, cap), cap));
++    } else {
++        _ring.fillColor = k_ringFill.CGColor; _ring.strokeColor = k_line.CGColor;
++        _knob.strokeColor = k_line.CGColor;
+     }
+-    static const int dir[4] = {3, 1, 0, 2};   // A right, B down, X up, Y left: the hacking cursor
+-    for (int i = 0; i < 4; i++) setPath(_arrow[i], iconPath(100 + dir[i], [self facePos:B_A + i], self.faceR * 0.5));
++    _stickBaseArt.contents = artwork ? (__bridge id)pragmataSprite(PStickBase).CGImage : nil;
++    _stickCapArt.contents = artwork ? (__bridge id)pragmataSprite(PStickCap).CGImage : nil;
++    _stickBaseArt.hidden = _stickCapArt.hidden = !artwork;
++    _knobIn.hidden = orbit; _knobShade.hidden = YES; _knobLip.hidden = YES;
++    for (int i = 0; i < 4; i++) _dchev[i].hidden = YES;
++    _dpadGuide.hidden = YES;
++    static const int dir[] = {3, 1, 0, 2};
++    for (int i = 0; i < 4; i++) setPath(_arrow[i], iconPath(100 + dir[i], [self facePos:B_A + i], [self faceRadiusFor:B_A + i] * 0.5));
+ }
+ - (void)layoutSubviews {
+     [super layoutSubviews];
+@@ -807,7 +897,7 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {   // Orbit: a co
+         _label[b].contentsScale = scale; [_label[b] setNeedsDisplay];
+     }
+     _controls.frame = self.layer.bounds;
+-    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
++    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, [self faceRadiusFor:b])); placeLabel(_label[b], c, 20 * u); }
+     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+         if (isDrop(b)) {
+             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
+@@ -824,13 +914,30 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {   // Orbit: a co
+     CGFloat mr = self.menuR; CGPoint mc = self.menuCenter;
+     _menu.frame = CGRectMake(mc.x - mr, mc.y - mr, 2 * mr, 2 * mr); _menu.layer.cornerRadius = mr;
+     _menu.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_menu.bounds].CGPath;
+-    [_menu setImage:[UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
++    UIImage *gear = self.orbit ? pragmataSprite(PGear) : nil;
++    _menu.imageView.contentMode = UIViewContentModeScaleAspectFit;
++    _menu.imageEdgeInsets = gear ? UIEdgeInsetsMake(mr * 0.34, mr * 0.34, mr * 0.34, mr * 0.34) : UIEdgeInsetsZero;
++    _menu.layer.cornerRadius = gear ? 0 : mr;
++    if (gear) {
++        CAShapeLayer *mask = [CAShapeLayer layer];
++        CGPathRef path = orbitOctagon(CGPointMake(mr, mr), mr);
++        mask.path = path; CGPathRelease(path); _menu.layer.mask = mask;
++        _menu.layer.borderWidth = 0;
++    } else {
++        _menu.layer.mask = nil; _menu.layer.borderWidth = 1.5;
++    }
++    [_menu setImage:gear ? [gear imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] :
++        [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 * u weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
+     CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     setPath(_knob, circlePath(CGPointMake(k, k), k));
+     CAShapeLayer *in = _knobIn; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);   // not the knob's first sublayer: Orbit's shade layer (a gradient, no path) comes first
+     in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
+-    if (DM_GAME_TOUCH_STYLE) [self orbitLayout:self.ou];   // its keys' unit
++    if (DM_GAME_TOUCH_STYLE) {
++        [self orbitLayout:self.ou];
++        [self applyOrbitOpacity];
++        [self layoutOrbitEditor];
++    }
+     [CATransaction commit];
+     [self refresh];
+ }
+@@ -839,24 +946,49 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {   // Orbit: a co
+ // keys' icons for cursor arrows (no HACKING text) and shows the second fire key; a locked ZL stays lit and shows LOCKED; the floating stick's ring follows its centre. Nothing marks the aim area
+ // or where a held aim is centred: the right stick is not drawn, as in the classic layout
+ - (void)orbitRefresh:(uint64_t)all {
+-    BOOL o = self.orbit, od = NO, f2 = NO, hack0 = o && ((all >> B_ZL) & 1);   // hacking mode: the face keys' outlines in the accent
+-    for (UITouch *t in _owner) { uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; if ((v & 0xff) == C_BTN && (v >> 8) == B_OD) od = YES; if ((v & 0xff) == C_FIRE2) f2 = YES; }
+-    _fire2.hidden = !hack0 && !f2;   // shown while ZL is on (held or locked); a finger still on it keeps it until let go
+-    for (int b = 0; b <= B_F2; b++) { CAShapeLayer *k = b == B_OD ? _od : b == B_F2 ? _fire2 : _key[b]; BOOL on = b == B_OD ? od : b == B_F2 ? f2 : (all >> b) & 1;
+-        if (b >= B_OD) k.fillColor = (on ? k_on : k_idle).CGColor;
+-        k.strokeColor = (on ? k_onLine : hack0 && b >= B_A && b <= B_Y ? k_accent : k_line).CGColor; k.shadowOpacity = on ? 0.35f : 0; k.shadowRadius = 6; k.shadowOffset = CGSizeZero;   // a faint glow
+-        if (_icon[b]) _icon[b].strokeColor = (on ? k_onLine : k_text).CGColor;
+-        if (_tag[b]) _tag[b].strokeColor = k_line.CGColor; }
+-    _odLabel.foregroundColor = (od ? k_textOn : k_text).CGColor; _fire2Label.foregroundColor = (f2 ? k_textOn : k_text).CGColor;
+-    for (int i = 0; i < 4; i++) { _dchev[i].strokeColor = nil; _dchev[i].fillColor = (((all >> (B_LEFT + i)) & 1) ? k_onLine : k_text).CGColor; }   // a pressed D-pad arm's arrowhead in full white
+-    for (int i = 0; i < 4; i++) { _arrow[i].hidden = !hack0; _icon[B_A + i].hidden = hack0; _arrow[i].strokeColor = (((all >> (B_A + i)) & 1) ? k_onLine : k_text).CGColor; }
+-    _lockHint.hidden = !(o && _zlLocked);
+-    if (o) {   // the floating stick, two plain circles: its ring follows its centre; running (past O_RUN times the rim, LS) only tints the ring near-white (no text, no marks)
+-        CGPoint c = [self stickCentre:0]; CGFloat R = [self stickR:0];
+-        BOOL run = _stick[0] && dist(_stickNow[0], c) > R * O_RUN;
+-        CGPathRef r = circlePath(c, R); _ring.path = r; _ring.shadowPath = r; CGPathRelease(r);
+-        _ring.lineWidth = 1.5; _ring.fillColor = k_okRing.CGColor; _ring.strokeColor = (run ? k_accent : k_okLine).CGColor;   // the Ocarina of Time port's ring (V23): faint fill, thin outline, soft shadow
+-        _ring.shadowColor = UIColor.blackColor.CGColor; _ring.shadowOpacity = 0.2f; _ring.shadowRadius = 3; _ring.shadowOffset = CGSizeMake(0, 1);
++    BOOL orbit = self.orbit, od = NO, fire = NO, hacking = orbit && ((all >> B_ZL) & 1);
++    for (UITouch *t in _owner) {
++        uint64_t v = [_owner objectForKey:t].unsignedLongLongValue;
++        if ((v & 0xff) == C_BTN && (v >> 8) == B_OD) od = YES;
++        if ((v & 0xff) == C_FIRE2) fire = YES;
++    }
++    _fire2.hidden = !orbit || (_tap && !_orbitEditor) || (!_orbitEditor && !hacking && !fire);
++    for (int b = 0; b <= B_F2; b++) {
++        CAShapeLayer *plate = b == B_OD ? _od : b == B_F2 ? _fire2 : _key[b];
++        BOOL on = b == B_OD ? od : b == B_F2 ? fire : (all >> b) & 1;
++        BOOL cursor = hacking && b >= B_A && b <= B_Y;
++        BOOL hasSprite = _art[b].contents != nil;
++        UIColor *outline = b == B_OD ? [UIColor colorWithRed:1 green:0.72 blue:0.31 alpha:0.85] : k_line;
++        if (b >= B_OD) plate.fillColor = (on ? k_on : k_idle).CGColor;
++        plate.strokeColor = (on ? k_onLine : cursor ? k_accent : outline).CGColor;
++        plate.shadowOpacity = on ? 0.35f : 0;
++        plate.shadowRadius = 6; plate.shadowOffset = CGSizeZero;
++        _art[b].hidden = !hasSprite || cursor;
++        _art[b].transform = on ? CATransform3DMakeScale(0.92, 0.92, 1) : CATransform3DIdentity;
++        _icon[b].hidden = hasSprite || cursor;
++        _icon[b].strokeColor = (on ? k_onLine : k_text).CGColor;
++        _tag[b].strokeColor = k_line.CGColor;
++        if (b >= B_A && b <= B_Y) {
++            _arrow[b - B_A].hidden = !cursor;
++            _arrow[b - B_A].strokeColor = (on ? k_onLine : k_text).CGColor;
++        }
++    }
++    _odLabel.foregroundColor = (od ? k_textOn : k_text).CGColor;
++    _fire2Label.foregroundColor = (fire ? k_textOn : k_text).CGColor;
++    _lockHint.hidden = !(orbit && _zlLocked);
++    if (orbit) {
++        CGPoint c = self.stickHome; CGFloat r = [self stickR:0];
++        BOOL running = _stick[0] && dist(_stickNow[0], c) > r * O_RUN;
++        _stickBaseArt.frame = orbitSquare(c, r);
++        BOOL artwork = _stickBaseArt.contents != nil;
++        setPath(_ring, artwork ? orbitOctagon(c, r) : circlePath(c, r));
++        _ring.lineWidth = 1.25;
++        _ring.fillColor = artwork ? NULL : k_okRing.CGColor;
++        _ring.strokeColor = (running ? k_accent : artwork ? UIColor.clearColor : k_okLine).CGColor;
++        _stickBaseArt.opacity = _stick[0] ? 1 : 0.80;
++        _knob.fillColor = _stickCapArt.contents ? NULL : (_stick[0] ? k_okKnobOn : k_okKnob).CGColor;
++        _knob.strokeColor = _stickCapArt.contents ? NULL : k_okLine.CGColor;
++        _stickCapArt.transform = _stick[0] ? CATransform3DMakeScale(0.95, 0.95, 1) : CATransform3DIdentity;
+     }
+ }
+ - (void)refresh {   // pressed state → fill, sticks → knob position
+@@ -871,6 +1003,8 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {   // Orbit: a co
+     [CATransaction commit];
+ }
+ 
++#include "DmOrbitEditor.inc"
++
+ // ---- Physical controllers ----
+ // Each controller with an extended gamepad profile is a player of its own, as on the Mac (front_mac.m): it holds a slot (pad_slots.h: player 1 first, a reconnected controller
+ // gets its player back) and goes to dm_pad_set_player, and hle_hid.c reports player n on its own npad while the slot is held (dm_pad_players). Player 1's controller is ORed
+@@ -962,7 +1096,12 @@ static BOOL pads_slotted(GCController *gone) {
+     GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
+     if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
+     BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
+-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });   // the touch gamepad hides while any controller is in use
++    dispatch_async(dispatch_get_main_queue(), ^{
++        if (any && self->_orbitEditor) [self endOrbitEditorSaved:NO];
++        self->_padOff = any;
++        [self updateTouchVisibility];
++        [self reset];
++    });   // the touch gamepad hides while any controller is in use
+ }
+ @end
+ 
+@@ -1061,9 +1200,15 @@ UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWi
+ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
+ void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
+ void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
++bool dm_gear_auto_hide(void) { return [g_view gearHidesAutomatically]; }
++void dm_gear_set_auto_hide(bool enabled) { [g_view setGearHidesAutomatically:enabled]; }
+ int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
+ bool dm_pad_layout_offered(int layout) { return layout == 0 || layout == 1 || (layout == 2 && dm_opmode() == 0); }
+ void dm_pad_layout_set(int layout) { [g_view setPadLayout:layout]; }
++bool dm_touch_controls_hidden(void) { return [g_view hideAllTouchControls]; }
++void dm_touch_controls_set_hidden(bool hidden) { [g_view setHideAllTouchControls:hidden]; }
++bool dm_orbit_edit_available(void) { return [g_view canEditOrbit]; }
++void dm_orbit_edit_begin(void) { [g_view beginOrbitEditor]; }
+ int dm_pad_layout_saved(void) {   // the layout the next start takes (the launcher's Controls node): the saved pick, else the profile's
+     NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key]; return saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
+ }
+diff --git a/dm/ios/Sources/DmOrbitEditor.inc b/dm/ios/Sources/DmOrbitEditor.inc
+new file mode 100644
+index 0000000..9043c36
+--- /dev/null
++++ b/dm/ios/Sources/DmOrbitEditor.inc
+@@ -0,0 +1,257 @@
++/* The Orbit layout editor, included in the DmGamepad implementation. */
++
++static const NSInteger k_orbit_editable[] = {
++    B_ZL, B_ZR, B_A, B_B, B_X, B_Y, B_L, B_R, B_MINUS, B_PLUS,
++    B_OD, B_F2, B_ORBIT_STICK, B_ORBIT_DPAD,
++};
++
++static CGFloat orbitEditorClamp(CGFloat value, CGFloat low, CGFloat high) {
++    return fmin(fmax(value, low), high);
++}
++
++static NSURL *orbitLayoutURL(void) {
++    NSURL *docs = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
++    return [docs URLByAppendingPathComponent:@"touch-layout-v1.json"];
++}
++
++- (void)loadOrbitLayout {
++    _orbitPlacement = [NSMutableDictionary dictionary];
++    NSData *data = [NSData dataWithContentsOfURL:orbitLayoutURL()];
++    id payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
++    if (![payload isKindOfClass:NSDictionary.class] || ![payload[@"version"] isEqual:@1]) return;
++    id controls = payload[@"controls"];
++    if (![controls isKindOfClass:NSDictionary.class]) return;
++    for (NSUInteger i = 0; i < sizeof(k_orbit_editable) / sizeof(k_orbit_editable[0]); i++) {
++        NSString *key = orbitPlacementKey(k_orbit_editable[i]);
++        id row = controls[key];
++        if (![row isKindOfClass:NSDictionary.class]) continue;
++        NSMutableDictionary *entry = [NSMutableDictionary dictionary];
++        for (NSString *field in @[@"x", @"y", @"scale", @"opacity"]) {
++            id value = row[field];
++            if (![value isKindOfClass:NSNumber.class] || !isfinite([value doubleValue])) continue;
++            CGFloat low = [field isEqual:@"scale"] ? 0.65 : [field isEqual:@"opacity"] ? 0.2 : 0;
++            CGFloat high = [field isEqual:@"scale"] ? 1.6 : 1;
++            entry[field] = @(orbitEditorClamp([value doubleValue], low, high));
++        }
++        if (entry.count) _orbitPlacement[key] = entry;
++    }
++}
++
++- (BOOL)canEditOrbit { return self.orbit && !_padOff; }
++
++- (CGFloat)orbitOpacity:(NSInteger)key {
++    NSNumber *opacity = self.orbit ? [self orbitPlacement:key][@"opacity"] : nil;
++    return opacity ? opacity.doubleValue : 1;
++}
++
++- (void)applyOrbitOpacity {
++    for (int key = 0; key <= B_F2; key++) {
++        BOOL directional = key >= B_LEFT && key <= B_DOWN;
++        CGFloat opacity = [self orbitOpacity:directional ? B_ORBIT_DPAD : key];
++        CAShapeLayer *shape = key == B_OD ? _od : key == B_F2 ? _fire2 : _key[key];
++        shape.opacity = opacity;
++    }
++    _lockHint.opacity = [self orbitOpacity:B_ZL];
++    _ring.opacity = _knob.opacity = [self orbitOpacity:B_ORBIT_STICK];
++}
++
++- (CGPoint)orbitEditorCentre:(NSInteger)key {
++    if (key == B_ORBIT_STICK) return self.stickHome;
++    if (key == B_ORBIT_DPAD) return self.dpadCenter;
++    return [self keyCentre:(int)key];
++}
++
++- (CGFloat)orbitEditorRadius:(NSInteger)key {
++    if (key == B_ORBIT_STICK) return [self stickR:0];
++    if (key == B_ORBIT_DPAD) return self.dpadR;
++    return [self keyRadius:(int)key];
++}
++
++- (NSInteger)orbitEditorKeyAt:(CGPoint)point {
++    NSInteger best = -1;
++    CGFloat nearest = 1;
++    for (NSUInteger i = 0; i < sizeof(k_orbit_editable) / sizeof(k_orbit_editable[0]); i++) {
++        NSInteger key = k_orbit_editable[i];
++        if (!_full && (key == B_ORBIT_DPAD || key == B_L)) continue;
++        CGFloat distance = dist(point, [self orbitEditorCentre:key]) / MAX([self orbitEditorRadius:key] + 10, 22);
++        if (distance < nearest) { best = key; nearest = distance; }
++    }
++    return best;
++}
++
++- (NSString *)orbitEditorTitle:(NSInteger)key {
++    switch (key) {
++        case B_ORBIT_STICK: return @"移动摇杆";
++        case B_ORBIT_DPAD: return @"方向键";
++        case B_OD: return @"超载 LS+RS";
++        case B_F2: return @"副射击 ZR";
++        default: return [_label[key].string isKindOfClass:NSString.class] ? _label[key].string : @"按键";
++    }
++}
++
++- (void)layoutOrbitEditor {
++    if (!_orbitEditor) return;
++    _orbitEditor.frame = self.bounds;
++    _orbitCanvas.frame = _orbitEditor.bounds;
++    _orbitSelection.frame = _orbitCanvas.bounds;
++    CGRect safe = self.safe;
++    CGFloat w = MIN(CGRectGetWidth(safe) - 16, 520);
++    _orbitPanel.frame = CGRectMake(CGRectGetMidX(safe) - w / 2, CGRectGetMinY(safe) + 4, w, 70);
++    _orbitSelection.hidden = _orbitSelected < 0;
++    if (_orbitSelected >= 0) {
++        CGPoint centre = [self orbitEditorCentre:_orbitSelected];
++        setPath(_orbitSelection, circlePath(centre, [self orbitEditorRadius:_orbitSelected] + 5));
++    }
++}
++
++- (void)selectOrbitEditorKey:(NSInteger)key {
++    _orbitSelected = key;
++    _orbitSelectedName.text = key >= 0 ? [self orbitEditorTitle:key] : @"点选或拖动按键";
++    _orbitSize.enabled = _orbitOpacity.enabled = key >= 0;
++    _orbitSize.value = key >= 0 ? [self orbitScale:key] : 1;
++    _orbitOpacity.value = key >= 0 ? [self orbitOpacity:key] : 1;
++    [self layoutOrbitEditor];
++}
++
++- (void)orbitEditorPoint:(CGPoint)point {
++    CGRect area = self.safe;
++    if (_orbitSelected < 0 || CGRectIsEmpty(area)) return;
++    CGFloat radius = [self orbitEditorRadius:_orbitSelected];
++    CGFloat xMargin = MIN(radius + 4, CGRectGetWidth(area) / 2);
++    CGFloat yMargin = MIN(radius + 4, CGRectGetHeight(area) / 2);
++    CGFloat x = orbitEditorClamp(point.x, CGRectGetMinX(area) + xMargin, CGRectGetMaxX(area) - xMargin);
++    CGFloat y = orbitEditorClamp(point.y, CGRectGetMinY(area) + yMargin, CGRectGetMaxY(area) - yMargin);
++    NSMutableDictionary *entry = [[self orbitPlacement:_orbitSelected] mutableCopy] ?: [NSMutableDictionary dictionary];
++    entry[@"x"] = @((x - CGRectGetMinX(area)) / CGRectGetWidth(area));
++    entry[@"y"] = @((y - CGRectGetMinY(area)) / CGRectGetHeight(area));
++    _orbitPlacement[orbitPlacementKey(_orbitSelected)] = entry;
++    [self setNeedsLayout];
++    [self layoutIfNeeded];
++}
++
++- (void)orbitEditorTap:(UITapGestureRecognizer *)tap {
++    [self selectOrbitEditorKey:[self orbitEditorKeyAt:[tap locationInView:self]]];
++}
++
++- (void)orbitEditorPan:(UIPanGestureRecognizer *)pan {
++    CGPoint delta = [pan translationInView:self];
++    if (pan.state == UIGestureRecognizerStateBegan) {
++        CGPoint current = [pan locationInView:self];
++        CGPoint touch = CGPointMake(current.x - delta.x, current.y - delta.y);
++        [self selectOrbitEditorKey:[self orbitEditorKeyAt:touch]];
++        if (_orbitSelected >= 0) _orbitDragOrigin = [self orbitEditorCentre:_orbitSelected];
++    }
++    if (_orbitSelected >= 0 && (pan.state == UIGestureRecognizerStateChanged || pan.state == UIGestureRecognizerStateEnded))
++        [self orbitEditorPoint:CGPointMake(_orbitDragOrigin.x + delta.x, _orbitDragOrigin.y + delta.y)];
++}
++
++- (void)orbitEditorSlider:(UISlider *)slider {
++    if (_orbitSelected < 0) return;
++    NSMutableDictionary *entry = [[self orbitPlacement:_orbitSelected] mutableCopy] ?: [NSMutableDictionary dictionary];
++    NSString *field = slider == _orbitSize ? @"scale" : @"opacity";
++    entry[field] = @(slider.value);
++    _orbitPlacement[orbitPlacementKey(_orbitSelected)] = entry;
++    if (slider == _orbitSize && entry[@"x"]) [self orbitEditorPoint:[self orbitEditorCentre:_orbitSelected]];
++    else { [self setNeedsLayout]; [self layoutIfNeeded]; }
++}
++
++- (void)endOrbitEditorSaved:(BOOL)save {
++    if (save) {
++        NSDictionary *payload = @{@"version": @1, @"controls": _orbitPlacement};
++        NSError *error = nil;
++        NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:NSJSONWritingSortedKeys error:&error];
++        if (!data || ![data writeToURL:orbitLayoutURL() options:NSDataWritingAtomic error:&error]) {
++            LOG("[RED] could not save Orbit layout: %s", error.localizedDescription.UTF8String ?: "unknown error");
++            _orbitSelectedName.text = @"保存失败";
++            return;
++        }
++    } else {
++        _orbitPlacement = [_orbitBeforeEdit mutableCopy];
++    }
++    _orbitBeforeEdit = nil;
++    [_orbitEditor removeFromSuperview];
++    _orbitEditor = _orbitCanvas = nil;
++    [self updateTouchVisibility];
++    [_transientGear setEditing:NO];
++    _orbitPanel = nil;
++    _orbitSelection = nil;
++    _orbitSelectedName = nil;
++    _orbitSize = _orbitOpacity = nil;
++    [self setNeedsLayout];
++    [self refresh];
++    [self armDim];
++}
++
++- (UIButton *)orbitEditorButton:(NSString *)title handler:(void (^)(void))handler {
++    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
++    [button setTitle:title forState:UIControlStateNormal];
++    button.tintColor = UIColor.whiteColor;
++    [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) { handler(); }] forControlEvents:UIControlEventTouchUpInside];
++    return button;
++}
++
++- (UILabel *)orbitEditorLabel:(NSString *)text {
++    UILabel *label = [UILabel new];
++    label.text = text;
++    label.textColor = UIColor.whiteColor;
++    label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
++    [label setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
++    return label;
++}
++
++- (void)beginOrbitEditor {
++    if (![self canEditOrbit] || _orbitEditor) return;
++    if (!_full) [self setPadLayout:1];
++    [self reset];
++    [self wake];
++    _orbitBeforeEdit = [_orbitPlacement copy];
++    _orbitEditor = [[UIView alloc] initWithFrame:self.bounds];
++    [_transientGear setEditing:YES];
++    [self updateTouchVisibility];
++    _orbitCanvas = [[UIView alloc] initWithFrame:_orbitEditor.bounds];
++    [_orbitEditor addSubview:_orbitCanvas];
++    [_orbitCanvas addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(orbitEditorTap:)]];
++    [_orbitCanvas addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(orbitEditorPan:)]];
++    _orbitSelection = [CAShapeLayer layer];
++    _orbitSelection.strokeColor = UIColor.systemCyanColor.CGColor;
++    _orbitSelection.fillColor = nil;
++    _orbitSelection.lineWidth = 2;
++    _orbitSelection.lineDashPattern = @[@4, @3];
++    [_orbitCanvas.layer addSublayer:_orbitSelection];
++
++    __weak DmGamepad *weak = self;
++    UIButton *reset = [self orbitEditorButton:@"恢复默认" handler:^{
++        DmGamepad *pad = weak;
++        if (!pad) return;
++        [pad->_orbitPlacement removeAllObjects];
++        [pad selectOrbitEditorKey:-1];
++        [pad setNeedsLayout];
++    }];
++    UIButton *cancel = [self orbitEditorButton:@"取消" handler:^{ [weak endOrbitEditorSaved:NO]; }];
++    UIButton *save = [self orbitEditorButton:@"保存" handler:^{ [weak endOrbitEditorSaved:YES]; }];
++    _orbitSelectedName = [self orbitEditorLabel:@""];
++    UIStackView *top = [[UIStackView alloc] initWithArrangedSubviews:@[_orbitSelectedName, [UIView new], reset, cancel, save]];
++    top.spacing = 10;
++
++    _orbitSize = [UISlider new]; _orbitSize.minimumValue = 0.65; _orbitSize.maximumValue = 1.6;
++    _orbitSize.accessibilityLabel = @"按键大小";
++    _orbitOpacity = [UISlider new]; _orbitOpacity.minimumValue = 0.2; _orbitOpacity.maximumValue = 1;
++    _orbitOpacity.accessibilityLabel = @"按键透明度";
++    [_orbitSize addTarget:self action:@selector(orbitEditorSlider:) forControlEvents:UIControlEventValueChanged];
++    [_orbitOpacity addTarget:self action:@selector(orbitEditorSlider:) forControlEvents:UIControlEventValueChanged];
++    UIStackView *sliders = [[UIStackView alloc] initWithArrangedSubviews:@[[self orbitEditorLabel:@"大小"], _orbitSize,
++                                                                        [self orbitEditorLabel:@"透明度"], _orbitOpacity]];
++    sliders.spacing = 9;
++    [sliders.heightAnchor constraintGreaterThanOrEqualToConstant:26].active = YES;
++    _orbitPanel = [[UIStackView alloc] initWithArrangedSubviews:@[top, sliders]];
++    _orbitPanel.axis = UILayoutConstraintAxisVertical;
++    _orbitPanel.spacing = 2;
++    _orbitPanel.layoutMarginsRelativeArrangement = YES;
++    _orbitPanel.layoutMargins = UIEdgeInsetsMake(3, 12, 3, 12);
++    _orbitPanel.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.92];
++    _orbitPanel.layer.cornerRadius = 12;
++    [_orbitEditor addSubview:_orbitPanel];
++    [self addSubview:_orbitEditor];
++    [self selectOrbitEditorKey:-1];
++    [self setNeedsLayout];
++}
+diff --git a/dm/ios/Sources/DmPragmataArt.inc b/dm/ios/Sources/DmPragmataArt.inc
+new file mode 100644
+index 0000000..97a3097
+--- /dev/null
++++ b/dm/ios/Sources/DmPragmataArt.inc
+@@ -0,0 +1,47 @@
++// Isolated sprites from the PRAGMATA touch design, packed once in the app bundle.
++typedef NS_ENUM(NSInteger, PragmataSprite) {
++    PTarget, PRun, PShield, PBlade, PCycle, PShot, POverdrive, PGear,
++    PHeal, PGrenade, PBattery, PSupply, PStickBase, PStickCap, PPulse, PReload,
++    PArtCount, PArtNone = -1,
++};
++
++static UIImage *pragmataSprite(PragmataSprite sprite) {
++    static UIImage *art[PArtCount];
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        NSURL *url = [NSBundle.mainBundle URLForResource:@"PragmataTouch" withExtension:@"png"];
++        UIImage *atlas = url ? [UIImage imageWithContentsOfFile:url.path] : nil;
++        CGImageRef image = atlas.CGImage;
++        if (!image || CGImageGetWidth(image) != 1254 || CGImageGetHeight(image) != 1254) {
++            LOG("[RED] PRAGMATA touch atlas missing or incorrect size");
++            return;
++        }
++        static const CGRect cells[PArtCount] = {
++            {{78, 100}, {222, 215}}, {{385, 110}, {200, 172}}, {{688, 111}, {164, 184}}, {{982, 115}, {165, 180}},
++            {{103, 396}, {165, 168}}, {{357, 412}, {255, 135}}, {{672, 378}, {199, 187}}, {{970, 387}, {187, 184}},
++            {{112, 686}, {151, 151}}, {{409, 667}, {147, 182}}, {{708, 667}, {123, 181}}, {{972, 677}, {188, 173}},
++            {{79, 942}, {220, 220}}, {{380, 952}, {204, 206}}, {{664, 979}, {213, 134}}, {{980, 957}, {169, 186}},
++        };
++        for (NSInteger i = 0; i < PArtCount; i++) {
++            CGImageRef tile = CGImageCreateWithImageInRect(image, cells[i]);
++            if (tile) { art[i] = [UIImage imageWithCGImage:tile]; CGImageRelease(tile); }
++        }
++        LOG("front end: PRAGMATA touch artwork loaded (PragmataTouch.png)");
++    });
++    return sprite >= 0 && sprite < PArtCount ? art[sprite] : nil;
++}
++
++static CGRect orbitSquare(CGPoint c, CGFloat r) {
++    return CGRectMake(c.x - r, c.y - r, r * 2, r * 2);
++}
++
++static CGPathRef orbitOctagon(CGPoint c, CGFloat r) CF_RETURNS_RETAINED;
++static CGPathRef orbitOctagon(CGPoint c, CGFloat r) {
++    const CGFloat cut = 0.58;
++    const CGPoint edge[] = {{-cut, -1}, {cut, -1}, {1, -cut}, {1, cut}, {cut, 1}, {-cut, 1}, {-1, cut}, {-1, -cut}};
++    CGMutablePathRef path = CGPathCreateMutable();
++    CGPathMoveToPoint(path, NULL, c.x + r * edge[0].x, c.y + r * edge[0].y);
++    for (int i = 1; i < 8; i++) CGPathAddLineToPoint(path, NULL, c.x + r * edge[i].x, c.y + r * edge[i].y);
++    CGPathCloseSubpath(path);
++    return path;
++}
+diff --git a/dm/ios/Sources/DmTransientGear.inc b/dm/ios/Sources/DmTransientGear.inc
+new file mode 100644
+index 0000000..a7d2fc0
+--- /dev/null
++++ b/dm/ios/Sources/DmTransientGear.inc
+@@ -0,0 +1,82 @@
++// UIKit-only gear visibility. Gamepad touch handling remains independent.
++@interface DmTransientGear : NSObject
++@property(nonatomic, readonly, getter=isAutomatic) BOOL automatic;
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button;
++- (void)setAutomatic:(BOOL)automatic;
++- (void)setEditing:(BOOL)editing;
++- (void)setForcedAutomatic:(BOOL)automatic;
++@end
++
++@implementation DmTransientGear {
++    __weak UIButton *_button;
++    UITapGestureRecognizer *_tap;
++    NSTimer *_hideTimer;
++    BOOL _automatic, _forcedAutomatic, _revealed, _editing;
++}
++static NSString *const k_transientGearKey = @"DmTransientGearV1";
++
++- (instancetype)initWithPad:(UIView *)pad button:(UIButton *)button {
++    if ((self = [super init])) {
++        _button = button;
++        _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(screenTapped:)];
++        _tap.cancelsTouchesInView = NO;
++        _tap.delaysTouchesBegan = NO;
++        _tap.delaysTouchesEnded = NO;
++        _tap.requiresExclusiveTouchType = NO;
++        [pad addGestureRecognizer:_tap];
++        _automatic = [NSUserDefaults.standardUserDefaults boolForKey:k_transientGearKey];
++        [self updateVisibility];
++    }
++    return self;
++}
++- (BOOL)isAutomatic { return _automatic; }
++- (void)updateVisibility {
++    BOOL hides = _automatic || _forcedAutomatic;
++    _tap.enabled = hides && !_editing;
++    _button.hidden = _editing || (hides && !_revealed);
++}
++- (void)showTemporarily {
++    if ((!_automatic && !_forcedAutomatic) || _editing) return;
++    [_hideTimer invalidate];
++    _revealed = YES;
++    [self updateVisibility];
++    __weak DmTransientGear *weakGear = self;
++    _hideTimer = [NSTimer timerWithTimeInterval:3.0 repeats:NO block:^(NSTimer *timer) {
++        DmTransientGear *gear = weakGear;
++        if (!gear || timer != gear->_hideTimer) return;
++        gear->_hideTimer = nil;
++        gear->_revealed = NO;
++        [gear updateVisibility];
++    }];
++    [NSRunLoop.mainRunLoop addTimer:_hideTimer forMode:NSRunLoopCommonModes];
++}
++- (void)screenTapped:(UITapGestureRecognizer *)recognizer {
++    if (recognizer.state == UIGestureRecognizerStateRecognized) [self showTemporarily];
++}
++- (void)setAutomatic:(BOOL)automatic {
++    _automatic = automatic;
++    [NSUserDefaults.standardUserDefaults setBool:automatic forKey:k_transientGearKey];
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    if ((_automatic || _forcedAutomatic) && !_editing) [self showTemporarily];
++    else [self updateVisibility];
++}
++- (void)setForcedAutomatic:(BOOL)automatic {
++    if (_forcedAutomatic == automatic) return;
++    _forcedAutomatic = automatic;
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    [self updateVisibility];
++}
++- (void)setEditing:(BOOL)editing {
++    _editing = editing;
++    [_hideTimer invalidate];
++    _hideTimer = nil;
++    _revealed = NO;
++    [self updateVisibility];
++    if (!editing) [self showTemporarily];
++}
++- (void)dealloc { [_hideTimer invalidate]; }
++@end
+diff --git a/dm/ios/Sources/GameMenu.swift b/dm/ios/Sources/GameMenu.swift
+index 35fbcea..dd1e35e 100644
+--- a/dm/ios/Sources/GameMenu.swift
++++ b/dm/ios/Sources/GameMenu.swift
+@@ -14,25 +14,66 @@ public func dmGameMenu() -> UnsafeMutableRawPointer {
+ }
+ 
+ private func gameMenuItems() -> [UIMenuElement] {
+-    let names = ["2D", "3D", "Tap"]
++    let names = PadLayout.names()
+     let layouts = (0..<3).filter { dm_pad_layout_offered(Int32($0)) }.map { l in
+         UIAction(title: names[l], state: dm_pad_layout() == l ? .on : .off) { _ in dm_pad_layout_set(Int32(l)) }
+     }
+     let layout = UIMenu(title: "Controller layout", options: .singleSelection, children: layouts)   // a choice's value shows in its submenu: a subtitle would make each row two lines
++    var controlItems: [UIMenuElement] = []
++    if dm_touch_style() != 0 {
++        let available = dm_orbit_edit_available()
++        let edit = UIAction(title: "自定义布局", image: UIImage(systemName: "move.3d"),
++                            attributes: available ? [] : .disabled) { _ in dm_orbit_edit_begin() }
++        if !available { edit.subtitle = "在横屏叠加模式下断开手柄后可编辑" }
++        controlItems.append(edit)
++    }
++    controlItems.append(UIAction(title: "隐藏全部按键", image: UIImage(systemName: "eye.slash"),
++                                 state: dm_touch_controls_hidden() ? .on : .off) { _ in
++        dm_touch_controls_set_hidden(!dm_touch_controls_hidden())
++    })
++    controlItems.append(layout)
++    let hideGear = UIAction(title: "设置键自动隐藏", image: UIImage(systemName: "gearshape"),
++                            state: dm_gear_auto_hide() ? .on : .off) { _ in
++        dm_gear_set_auto_hide(!dm_gear_auto_hide())
++    }
++    controlItems.append(hideGear)
+     var items: [UIMenuElement] = []
+     var placed = false
+     if let m = gameMenuModel {
+         for section in m.sections {
+-            var rows: [UIMenuElement] = section == "Controls" ? [layout] : []
++            var rows: [UIMenuElement] = section == "Controls" ? controlItems : []
+             if section == "Controls" { placed = true }
+-            for s in m.rows(in: section) where (s.kind == "choice" || s.kind == "toggle") && dm_setting_live(s.env, nil) { rows.append(gameMenuRow(m, s)) }
++            for s in m.rows(in: section) where !m.qualityControls(s) && (s.kind == "choice" || s.kind == "toggle") {
++                if s.env == pragmataTextureSetting || s.restart == true {
++                    rows.append(gameMenuRestartChoice(m, s))
++                } else if dm_setting_live(s.env, nil) {
++                    rows.append(gameMenuRow(m, s))
++                }
++            }
+             if !rows.isEmpty { items.append(UIMenu(options: .displayInline, children: rows)) }
+         }
+     }
+-    if !placed { items.insert(UIMenu(options: .displayInline, children: [layout]), at: 0) }
++    if !placed { items.insert(UIMenu(options: .displayInline, children: controlItems), at: 0) }
+     return items
+ }
+ 
++private func gameMenuRestartChoice(_ m: LauncherModel, _ s: Setting) -> UIMenu {
++    let language = LauncherLanguage.resolve(UserDefaults.standard.string(forKey: "launcher.menuLanguage") ?? "system")
++    let selection = m.values[s.env] ?? s.def
++    let attributes: UIMenuElement.Attributes = m.fixed.contains(s.env) ? .disabled : []
++    let options = s.kind == "toggle" ? [[s.onValue, "On"], [s.offValue, "Off"]] : offeredOptions(s, current: selection)
++    let restart = language.text("Applies after restarting the app")
++    let selected = options.first { $0[0] == selection }
++    let subtitle = selected.map { "\(language.text($0[1])) · \(restart)" } ?? restart
++    let actions = options.map { option in
++        UIAction(title: language.text(option[1]), attributes: attributes, state: option[0] == selection ? .on : .off) { _ in
++            m.choose(s, option[0], applyImmediately: false)
++        }
++    }
++    return UIMenu(title: language.text(s.label), subtitle: subtitle,
++                  options: .singleSelection, children: actions)
++}
++
+ private func gameMenuRow(_ m: LauncherModel, _ s: Setting) -> UIMenuElement {
+     let now = m.values[s.env] ?? s.def, fixed = m.fixed.contains(s.env)
+     let attributes: UIMenuElement.Attributes = fixed ? .disabled : []
+diff --git a/dm/ios/Sources/Launcher.swift b/dm/ios/Sources/Launcher.swift
+index 101ce31..960643a 100644
+--- a/dm/ios/Sources/Launcher.swift
++++ b/dm/ios/Sources/Launcher.swift
+@@ -14,6 +14,7 @@ private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryK
+ /// Cloud saves too). The host brings the save in from there when the game starts and
+ /// sends it there after each save (dm/host/save_sync.h); the folder is a bookmark (CloudSaves.m).
+ private struct CloudSavesSection: View {
++    let language: LauncherLanguage
+     @State private var folder: String = ""
+     @State private var note: String = ""
+     @State private var picking = false
+@@ -21,33 +22,31 @@ private struct CloudSavesSection: View {
+     var body: some View {
+         Section {
+             HStack {
+-                Text("Cloud saves")
++                Text(language.text("Cloud saves"))
+                 Spacer()
+-                Text(folder.isEmpty ? "Off" : (folder as NSString).lastPathComponent)
++                Text(folder.isEmpty ? language.text("OFF") : (folder as NSString).lastPathComponent)
+                     .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+             }
+-            Button(folder.isEmpty ? "Choose a folder in iCloud Drive…" : "Choose a different folder…") { picking = true }
++            Button(language.text(folder.isEmpty ? "Choose a folder in iCloud Drive…" : "Choose a different folder…")) { picking = true }
+                 // The sheet sits on the button, not on the Section: SwiftUI hands a Section's modifiers to every row, so one tap presented a picker per row and they invalidated each other (LNPANDY/NX2Apple#315).
+                 .sheet(isPresented: $picking) {
+                     DocumentPicker(types: [.folder]) { url in
+                         picking = false
+                         if dm_store_cloud_saves(url) {
+-                            note = "Saved. The game uses this folder when you press Play."
++                            note = "Cloud folder saved."
+                             refresh()
+                         } else {
+-                            note = "That folder could not be remembered — try a different one."
++                            note = "Choose another folder."
+                         }
+                     } onCancel: { picking = false }
+                 }
+             if !folder.isEmpty {
+-                Button("Turn off cloud saves", role: .destructive) {
++                Button(language.text("Turn off cloud saves"), role: .destructive) {
+                     dm_clear_cloud_saves(); refresh(); note = ""
+                 }
+             }
+         } footer: {
+-            Text(note.isEmpty
+-                 ? "Choose a folder in iCloud Drive, and the same one in the Mac app's Cloud saves. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in save-backups."
+-                 : note)
++            Text(language.text(note.isEmpty ? "Choose the same iCloud Drive folder on both devices to sync saves." : note))
+         }
+         .onAppear(perform: refresh)
+     }
+@@ -56,7 +55,7 @@ private struct CloudSavesSection: View {
+         var stale: ObjCBool = false
+         folder = dm_cloud_saves_path(&stale) ?? ""
+         if stale.boolValue && folder.isEmpty {
+-            note = "The folder you chose before is no longer readable (the app was signed differently). Please choose it again."
++            note = "The saved folder is no longer readable. Choose it again."
+         }
+     }
+ }
+@@ -103,6 +102,8 @@ private struct LauncherView: View {
+     @State private var selected = "saver"   // the node the readout describes
+     @State private var allOpen = false
+     @State private var cloudOpen = false
++    @AppStorage("launcher.menuLanguage") private var menuLanguage = LauncherLanguage.system.rawValue
++    private var language: LauncherLanguage { .resolve(menuLanguage) }
+     @State private var padSaved = Int(dm_pad_layout_saved())   // the touch layout the next start takes (DmGamepad.m)
+ 
+     private static let cols: [CGFloat] = [122, 234], rowsY: [CGFloat] = [122, 210, 298]   // the nodes' centres on the board, two columns of three
+@@ -115,33 +116,34 @@ private struct LauncherView: View {
+         GeometryReader { g in
+             let k = min(g.size.width / Board.size.width, g.size.height / Board.size.height)
+             ZStack {
+-                LauncherBackdrop()
++                LauncherBackdrop(language: language)
+                 board.frame(width: Board.size.width, height: Board.size.height).scaleEffect(k).frame(width: g.size.width, height: g.size.height)
+                 if allOpen { allSettings.transition(.opacity) }
+             }
+         }
+         .ignoresSafeArea()
++        .environment(\.locale, language.locale)
+         .preferredColorScheme(.dark)
+         .statusBarHidden()
+         .animation(.easeOut(duration: 0.18), value: allOpen)
+         .sheet(isPresented: $cloudOpen) {
+             NavigationStack {
+-                List { CloudSavesSection() }
+-                    .navigationTitle("Cloud saves").navigationBarTitleDisplayMode(.inline)
+-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { cloudOpen = false } } }
++                List { CloudSavesSection(language: language) }
++                    .navigationTitle(language.text("Cloud saves")).navigationBarTitleDisplayMode(.inline)
++                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(language.text("Done")) { cloudOpen = false } } }
+             }
+             .preferredColorScheme(.dark)
+         }
+-        .confirmationDialog(SaveSyncReport.chooseTitle, isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
+-            Button(r.localLabel(here: "iPhone")) { go(r.localChoice) }
+-            Button(r.cloudLabel) { go(r.cloudChoice) }
+-            Button("Cancel", role: .cancel) {}
+-        } message: { r in Text(r.chooseMessage(here: "iPhone")) }
+-        .confirmationDialog(SaveSyncReport.unreadableTitle, isPresented: isAsking(.unreadable), titleVisibility: .visible, presenting: report) { r in
+-            Button("Play This iPhone's Save") { go("offline") }   // the mount does not wait for the cloud again
+-            Button("Try Again") { DispatchQueue.main.async { start() } }
+-            Button("Cancel", role: .cancel) {}
+-        } message: { r in Text(r.unreadableMessage(here: "iPhone")) }
++        .confirmationDialog(language.text(SaveSyncReport.chooseTitle), isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
++            Button(saveLabel(language.text("This device"), date: r.localSaved, bytes: r.localSize)) { go(r.localChoice) }
++            Button(saveLabel("iCloud", date: r.cloudSaved, bytes: r.cloudSize)) { go(r.cloudChoice) }
++            Button(language.text("Cancel"), role: .cancel) {}
++        } message: { _ in Text(language.text("Both saves changed. The other save is kept in backups.")) }
++        .confirmationDialog(language.text(SaveSyncReport.unreadableTitle), isPresented: isAsking(.unreadable), titleVisibility: .visible, presenting: report) { r in
++            Button(language.text("Play This iPhone's Save")) { go("offline") }   // the mount does not wait for the cloud again
++            Button(language.text("Try Again")) { DispatchQueue.main.async { start() } }
++            Button(language.text("Cancel"), role: .cancel) {}
++        } message: { _ in Text(language.text("You can play locally. Upload resumes after the next successful comparison.")) }
+         .task {
+             while !Task.isCancelled {
+                 memory = os_proc_available_memory()
+@@ -172,7 +174,7 @@ private struct LauncherView: View {
+                 Chamfer().fill(Board.panel.opacity(0.62))
+                 BoardGrid().clipShape(Chamfer())
+                 Chamfer().stroke(Board.mint.opacity(0.25), lineWidth: 1)
+-                Text("// ROUTE CONFIG").font(Board.mono(9)).tracking(1.5).foregroundStyle(Board.mint).offset(x: 12, y: 8)
++                Text("// " + language.text("ROUTE CONFIG")).font(Board.mono(9)).tracking(1.5).foregroundStyle(Board.mint).offset(x: 12, y: 8)
+             }
+             .frame(width: 230, height: 300).offset(x: 62, y: 70)
+ 
+@@ -182,13 +184,13 @@ private struct LauncherView: View {
+ 
+             readout.frame(width: Board.size.width - 62 - 650, height: 124).offset(x: 650, y: 66)
+ 
+-            Text(checking ? "SYNCING" : "PLAY").font(Board.title(18)).tracking(6).foregroundStyle(Board.white)
++            Text(language.text(checking ? "SYNCING" : "PLAY")).font(Board.title(18)).tracking(6).foregroundStyle(Board.white)
+                 .shadow(color: .black.opacity(0.8), radius: 3, y: 1)
+                 .frame(width: 140).offset(x: 672, y: 218).accessibilityHidden(true)
+-            PlayDiamond(busy: checking, tap: start).offset(x: 686, y: 262)
++            PlayDiamond(busy: checking, language: language, tap: start).offset(x: 686, y: 262)
+             if checking {
+                 Button { checking = false; go("offline") } label: {
+-                    Text("PLAY WITHOUT IT").font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Board.white)
++                    Text(language.text("PLAY WITHOUT IT")).font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Board.white)
+                         .padding(.horizontal, 10).frame(height: 30).background(Board.panel.opacity(0.55), ignoresSafeAreaEdges: [])
+                         .overlay(Rectangle().strokeBorder(Board.white.opacity(0.4), lineWidth: 1))
+                 }
+@@ -199,18 +201,33 @@ private struct LauncherView: View {
+ 
+     private var chips: some View {
+         HStack(spacing: 10) {
+-            Text("● LINK").foregroundStyle(Board.mint)
+-            if let s = m.setting("DM_OPMODE") { Text(m.shown(s)) }
++            Text("● " + language.text("LINK")).foregroundStyle(Board.mint)
++            if let quality = m.quality {
++                Menu {
++                    ForEach(PragmataQuality.allCases, id: \.self) { option in
++                        Button { m.selectQuality(option) } label: {
++                            if option == quality { Label(language.text(option.label), systemImage: "checkmark") }
++                            else { Text(language.text(option.label)) }
++                        }
++                    }
++                } label: {
++                    Label(language.text(quality.label), systemImage: "slider.horizontal.3")
++                        .padding(.horizontal, 8).frame(height: 30)
++                        .background(Board.panel.opacity(0.55))
++                }
++                .accessibilityLabel(language.text("Graphics quality"))
++            } else if let s = m.setting("DM_OPMODE") { Text(m.shown(s, language: language)) }
+             if let s = m.setting("DM_FPS_TARGET") {
+                 let fg = m.setting("DM_FRAMEGEN").map { m.lit($0) } ?? false
+-                Text(m.shown(s) + (fg ? " → 60" : ""))
++                Text(m.shown(s, language: language) + (fg ? " → 60" : ""))
+             }
+             if memory > 0 {
+-                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory).uppercased() + " FREE")
++                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory).uppercased() + " " + language.text("AVAILABLE"))
+                     .monospacedDigit().foregroundStyle(memory > 3 << 30 ? Board.dim : Board.amber)
+             }
++            languagePicker
+             Button { allOpen = true } label: {
+-                Text("ALL SETTINGS").font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Color(red: 232 / 255, green: 241 / 255, blue: 250 / 255))
++                Text(language.text("ALL SETTINGS")).font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Color(red: 232 / 255, green: 241 / 255, blue: 250 / 255))
+                     .padding(.horizontal, 12).frame(height: 30).background(Board.panel.opacity(0.55), ignoresSafeAreaEdges: [])
+                     .overlay(Rectangle().strokeBorder(Board.white.opacity(0.4), lineWidth: 1))
+             }
+@@ -221,11 +238,11 @@ private struct LauncherView: View {
+ 
+     @ViewBuilder private func node(_ n: BoardNode) -> some View {
+         if let s = m.setting(n.env) {
+-            NodeView(title: n.title, value: m.shown(s), icon: n.icon, lit: m.lit(s), selected: selected == n.id, locked: m.locked(s)) {
++            NodeView(title: language.text(n.title), value: m.shown(s, language: language), icon: n.icon, lit: m.lit(s), selected: selected == n.id, locked: m.locked(s)) {
+                 m.step(s); selected = n.id; tick()
+             }
+         } else {
+-            NodeView(title: n.title, value: PadLayout.names()[padNow].uppercased(), icon: n.icon, lit: true, selected: selected == n.id, locked: false) {
++            NodeView(title: language.text(n.title), value: language.text(PadLayout.names()[padNow]).uppercased(), icon: n.icon, lit: true, selected: selected == n.id, locked: false) {
+                 let l = PadLayout.next(handheld: handheld); dm_pad_layout_store(Int32(l)); padSaved = l; selected = n.id; tick()
+             }
+         }
+@@ -236,14 +253,15 @@ private struct LauncherView: View {
+     private var readout: some View {
+         let n = nodes.first { $0.id == selected } ?? nodes.first
+         let s = m.setting(n?.env)
+-        let value = s.map { m.shown($0) } ?? PadLayout.names()[padNow].uppercased()
++        let value = s.map { m.shown($0, language: language) } ?? language.text(PadLayout.names()[padNow]).uppercased()
+         var note = s == nil ? PadLayout.note : (n?.fallbackNote.isEmpty == false ? n!.fallbackNote : s!.note)
+-        if let s, m.locked(s) { note += " · " + m.lockNote(s) }
++        note = language.text(note)
++        if let s, m.locked(s) { note += " · " + language.text(m.lockNote(s)) }
+         return HStack(alignment: .top, spacing: 10) {
+             Rectangle().fill(Board.mint).frame(width: 3)
+             VStack(alignment: .leading, spacing: 3) {
+-                Text("// NODE · \(n?.code ?? "")").font(Board.mono(9)).tracking(1.5).foregroundStyle(Board.mint)
+-                Text("\((n?.title ?? "").uppercased()) — \(value)").font(Board.title(14)).tracking(0.8).foregroundStyle(Board.white).lineLimit(2).minimumScaleFactor(0.8)
++                Text("// " + language.text("NODE") + " · " + (n?.code ?? "")).font(Board.mono(9)).tracking(1.5).foregroundStyle(Board.mint)
++                Text("\(language.text(n?.title ?? "").uppercased()) — \(value)").font(Board.title(14)).tracking(0.8).foregroundStyle(Board.white).lineLimit(2).minimumScaleFactor(0.8)
+                 Text(note).font(.system(size: 10.5)).foregroundStyle(Color(red: 195 / 255, green: 210 / 255, blue: 224 / 255)).lineSpacing(1).minimumScaleFactor(0.75)
+                 Spacer(minLength: 0)
+             }
+@@ -263,12 +281,13 @@ private struct LauncherView: View {
+             VStack(spacing: 0) {
+                 HStack(spacing: 12) {
+                     VStack(alignment: .leading, spacing: 2) {
+-                        Text("// SYSTEM CONFIG").font(Board.mono(10)).foregroundStyle(Board.mint)
+-                        Text("ALL SETTINGS").font(Board.title(22)).tracking(3).foregroundStyle(Board.white)
++                        Text("// " + language.text("SYSTEM CONFIG")).font(Board.mono(10)).foregroundStyle(Board.mint)
++                        Text(language.text("ALL SETTINGS")).font(Board.title(22)).tracking(3).foregroundStyle(Board.white)
+                     }
+                     Spacer()
++                    languagePicker
+                     Button { allOpen = false } label: {
+-                        Text("DONE").font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Color(red: 3 / 255, green: 16 / 255, blue: 21 / 255))
++                        Text(language.text("Done").uppercased()).font(Board.mono(10, .bold)).tracking(1).foregroundStyle(Color(red: 3 / 255, green: 16 / 255, blue: 21 / 255))
+                             .padding(.horizontal, 16).frame(height: 34).background(Board.mint, ignoresSafeAreaEdges: [])
+                     }
+                     .buttonStyle(.plain)
+@@ -277,15 +296,15 @@ private struct LauncherView: View {
+                 ScrollView {
+                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 10) {
+                         ForEach(m.sections, id: \.self) { section in
+-                            ForEach(m.rows(in: section)) { SettingCard(s: $0, m: m) }
++                            ForEach(m.rows(in: section)) { SettingCard(s: $0, m: m, language: language) }
+                         }
+-                        ActionCard(group: "CONTROLS", title: "Touch layout", note: PadLayout.note, value: PadLayout.names()[padNow].uppercased(), on: true) {
++                        ActionCard(group: language.text("Controls").uppercased(), title: language.text("Touch layout"), note: language.text(PadLayout.note), value: language.text(PadLayout.names()[padNow]).uppercased(), on: true) {
+                             let l = PadLayout.next(handheld: handheld); dm_pad_layout_store(Int32(l)); padSaved = l
+                         }
+-                        ActionCard(group: "SAVES", title: "Cloud saves", note: "An iCloud Drive folder shared with the Mac app.", value: cloudFolder(), on: !cloudFolder().isEmpty) { cloudOpen = true }
+-                        ActionCard(group: "SYSTEM", title: "Memory available", note: "What iOS lets the game use now.",
++                        ActionCard(group: language.text("Saves").uppercased(), title: language.text("Cloud saves"), note: language.text("An iCloud Drive folder shared with the Mac app."), value: cloudFolder(), on: !cloudFolder().isEmpty) { cloudOpen = true }
++                        ActionCard(group: language.text("System").uppercased(), title: language.text("Memory available"), note: language.text("What iOS lets the game use now."),
+                                    value: ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory), on: false, tap: nil)
+-                        ActionCard(group: "SYSTEM", title: "Reset to tested defaults", note: "Brings back all settings this game was tested with.", value: "", on: false,
++                        ActionCard(group: language.text("System").uppercased(), title: language.text("Reset to tested defaults"), note: language.text("Brings back all settings this game was tested with."), value: "", on: false,
+                                    disabled: !m.changed) { m.reset() }
+                     }
+                     .padding(EdgeInsets(top: 4, leading: 62, bottom: 20, trailing: 62))
+@@ -294,6 +313,33 @@ private struct LauncherView: View {
+         }
+     }
+ 
++    private var languagePicker: some View {
++        Menu {
++            Picker(language.text("Menu language"), selection: $menuLanguage) {
++                ForEach(LauncherLanguage.allCases) { item in
++                    Text(item == .system ? language.text(item.menuName) : item.menuName).tag(item.rawValue)
++                }
++            }
++        } label: {
++            Image(systemName: "globe")
++                .font(.system(size: 15, weight: .medium))
++                .foregroundStyle(Board.mint)
++                .frame(width: 36, height: 34)
++                .background(Board.panel.opacity(0.55))
++                .overlay(Rectangle().strokeBorder(Board.white.opacity(0.4), lineWidth: 1))
++        }
++        .accessibilityLabel(language.text("Menu language"))
++    }
++
++    private func saveLabel(_ name: String, date: Date, bytes: Int64) -> String {
++        let formatter = DateFormatter()
++        formatter.locale = language.locale
++        formatter.doesRelativeDateFormatting = true
++        formatter.dateStyle = .short
++        formatter.timeStyle = .short
++        return name + " · " + formatter.string(from: date) + " · " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
++    }
++
+     private func cloudFolder() -> String {
+         var stale: ObjCBool = false
+         return (dm_cloud_saves_path(&stale) ?? "").split(separator: "/").last.map(String.init) ?? ""
+@@ -350,7 +396,7 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
+     let dir = getenv("DM_APP_DM").map { URL(fileURLWithPath: String(cString: $0)) } ?? Bundle.main.resourceURL?.appendingPathComponent("dm")
+     guard let url = dir?.appendingPathComponent("launcher.json"), let data = try? Data(contentsOf: url) else { return false }
+     guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return false }
+-    let model = LauncherModel(file.settings)
++    let model = LauncherModel(file.settings, pragmataQualityDefault: file.pragmataQualityDefault)
+     gameMenuModel = model   // the in-game menu shows and saves the same choices (GameMenu.swift)
+     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
+     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
+diff --git a/dm/ios/Sources/LauncherBoard.swift b/dm/ios/Sources/LauncherBoard.swift
+index ece9ab5..a9fab6b 100644
+--- a/dm/ios/Sources/LauncherBoard.swift
++++ b/dm/ios/Sources/LauncherBoard.swift
+@@ -44,6 +44,7 @@ struct BoardGrid: View {
+ 
+ /// The picture behind the launcher: dm/launcher_bg.jpg (build_ipa.sh copies the profile's), shaded at the sides where the board and the readout sit; a dark gradient without one
+ struct LauncherBackdrop: View {
++    let language: LauncherLanguage
+     static let picture: UIImage? = {
+         let dir = getenv("DM_APP_DM").map { URL(fileURLWithPath: String(cString: $0)) } ?? Bundle.main.resourceURL?.appendingPathComponent("dm")
+         guard let url = dir?.appendingPathComponent("launcher_bg.jpg") else { return nil }
+@@ -57,7 +58,7 @@ struct LauncherBackdrop: View {
+                 if let p = Self.picture {
+                     Image(uiImage: p).resizable().scaledToFill()
+                         .frame(width: g.size.width, height: g.size.height, alignment: .top).clipped()
+-                        .accessibilityLabel("The Earth rising over the lunar surface")
++                        .accessibilityLabel(language.text("The Earth rising over the lunar surface"))
+                 } else {
+                     LinearGradient(colors: [Color(red: 0.05, green: 0.09, blue: 0.15), Board.ink], startPoint: .top, endPoint: .bottom)
+                 }
+@@ -88,20 +89,36 @@ struct BoardNode: Identifiable {
+ 
+ extension LauncherModel {
+     func setting(_ env: String?) -> Setting? { env.flatMap { e in settings.first { $0.env == e } } }
+-    func locked(_ s: Setting) -> Bool { fixed.contains(s.env) }
+-    func lockNote(_ s: Setting) -> String { fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file" }
++    func locked(_ s: Setting) -> Bool { qualityControls(s) || fixed.contains(s.env) }
++    func lockNote(_ s: Setting) -> String {
++        if qualityControls(s) { return "Set by graphics quality" }
++        return fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file"
++    }
+ 
+     /// A setting's value as the board shows it: ON / OFF, a choice's label, a range's percentage; NEEDS <value> while the setting it needs has another value
+-    func shown(_ s: Setting) -> String {
++    func optionLabel(_ option: [String], for setting: Setting, language: LauncherLanguage) -> String {
++        if setting.env == "DM_LANG", language != .en {
++            return language.locale.localizedString(forIdentifier: option[0]) ?? option[1]
++        }
++        return language.text(option[1])
++    }
++
++    func shown(_ s: Setting, language: LauncherLanguage) -> String {
+         if !visible(s), let n = s.needs, let eq = n.firstIndex(of: "=") {
+             let key = String(n[..<eq]), want = String(n[n.index(after: eq)...])
+-            let label = setting(key)?.options?.first { $0[0] == want }?[1] ?? want
+-            return "NEEDS " + label.uppercased()
++            let other = setting(key)
++            let label: String
++            if let other, let option = other.options?.first(where: { $0[0] == want }) {
++                label = optionLabel(option, for: other, language: language)
++            } else { label = want }
++            return language.text("NEEDS") + " " + label.uppercased()
+         }
+         let v = values[s.env] ?? s.def
+         switch s.kind {
+-        case "toggle": return v == s.onValue ? "ON" : "OFF"
+-        case "choice": return (s.options?.first { $0[0] == v }?[1] ?? v).uppercased()
++        case "toggle": return language.text(v == s.onValue ? "ON" : "OFF")
++        case "choice":
++            guard let option = s.options?.first(where: { $0[0] == v }) else { return v.uppercased() }
++            return optionLabel(option, for: s, language: language).uppercased()
+         case "range": return rangeLabel(s, Double(v) ?? 1)
+         default: return v
+         }
+@@ -158,7 +175,7 @@ struct NodeView: View {
+                         .foregroundStyle(lit ? Color(red: 6 / 255, green: 16 / 255, blue: 25 / 255) : Color(red: 159 / 255, green: 178 / 255, blue: 198 / 255))
+                 }
+                 .frame(width: 66, height: 66).padding(.vertical, -10)
+-                Text(title.uppercased()).font(Board.title(12)).tracking(0.6).foregroundStyle(Board.white).lineLimit(1).fixedSize()
++                Text(title.uppercased()).font(Board.title(12)).tracking(0.6).foregroundStyle(Board.white).lineLimit(1).minimumScaleFactor(0.65)
+                     .shadow(color: .black.opacity(0.8), radius: 1.5, y: 1)
+                 Text(value).font(Board.mono(9)).foregroundStyle(lit ? Board.mint : Color(red: 159 / 255, green: 178 / 255, blue: 198 / 255)).lineLimit(1).fixedSize()
+             }
+@@ -173,6 +190,7 @@ struct NodeView: View {
+ /// Play: a white diamond in a glowing mint one
+ struct PlayDiamond: View {
+     let busy: Bool
++    let language: LauncherLanguage
+     let tap: () -> Void
+     var body: some View {
+         Button(action: tap) {
+@@ -188,7 +206,7 @@ struct PlayDiamond: View {
+         }
+         .buttonStyle(.plain)
+         .disabled(busy)
+-        .accessibilityLabel(busy ? "Checking the cloud save" : "Play")
++        .accessibilityLabel(language.text(busy ? "SYNCING" : "PLAY"))
+     }
+ }
+ 
+@@ -196,12 +214,13 @@ struct PlayDiamond: View {
+ struct SettingCard: View {
+     let s: Setting
+     @ObservedObject var m: LauncherModel
++    let language: LauncherLanguage
+ 
+     private var locked: Bool { m.locked(s) }
+     private var note: String {
+-        let n = s.note
++        let n = language.text(s.note)
+         guard locked else { return n }
+-        return (n.isEmpty ? "" : n + " · ") + m.lockNote(s)
++        return (n.isEmpty ? "" : n + " · ") + language.text(m.lockNote(s))
+     }
+     private var on: Bool { m.lit(s) }
+ 
+@@ -210,8 +229,8 @@ struct SettingCard: View {
+             switch s.kind {
+             case "choice":
+                 Menu {
+-                    Picker(s.label, selection: m.binding(s)) {
+-                        ForEach(offeredOptions(s, current: m.values[s.env]), id: \.[0]) { Text($0[1]).tag($0[0]) }
++                    Picker(language.text(s.label), selection: m.binding(s)) {
++                        ForEach(offeredOptions(s, current: m.values[s.env]), id: \.[0]) { Text(m.optionLabel($0, for: s, language: language)).tag($0[0]) }
+                     }
+                 } label: { face(slider: false) }
+             case "range": face(slider: true)
+@@ -221,16 +240,16 @@ struct SettingCard: View {
+         .buttonStyle(.plain)
+         .disabled(locked)
+         .opacity(locked ? 0.6 : 1)
+-        .accessibilityLabel("\(s.label): \(m.shown(s))")
++        .accessibilityLabel("\(language.text(s.label)): \(m.shown(s, language: language))")
+     }
+ 
+     @ViewBuilder private func face(slider: Bool) -> some View {
+         VStack(alignment: .leading, spacing: 6) {
+-            Text("// " + s.sectionTitle.uppercased()).font(Board.mono(9)).tracking(1).foregroundStyle(Color(red: 143 / 255, green: 166 / 255, blue: 189 / 255))
++            Text("// " + language.text(s.sectionTitle).uppercased()).font(Board.mono(9)).tracking(1).foregroundStyle(Color(red: 143 / 255, green: 166 / 255, blue: 189 / 255))
+             HStack(alignment: .firstTextBaseline, spacing: 8) {
+-                Text(s.label).font(.system(size: 13, weight: .semibold)).foregroundStyle(Board.white).multilineTextAlignment(.leading)
++                Text(language.text(s.label)).font(.system(size: 13, weight: .semibold)).foregroundStyle(Board.white).multilineTextAlignment(.leading)
+                 Spacer(minLength: 4)
+-                Pill(text: m.shown(s), on: on)
++                Pill(text: m.shown(s, language: language), on: on)
+             }
+             if slider {
+                 Slider(value: Binding(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 }, set: { m.values[s.env] = String(format: "%.2f", $0) }),
+diff --git a/dm/ios/Sources/LauncherLanguage.swift b/dm/ios/Sources/LauncherLanguage.swift
+new file mode 100644
+index 0000000..e8a036a
+--- /dev/null
++++ b/dm/ios/Sources/LauncherLanguage.swift
+@@ -0,0 +1,179 @@
++import Foundation
++
++enum LauncherLanguage: String, CaseIterable, Identifiable {
++    case system, en, zhHans = "zh-Hans", zhHant = "zh-Hant", ja, ko, fr, de, es
++
++    var id: String { rawValue }
++    var menuName: String {
++        switch self {
++        case .system: return "System language"
++        case .en: return "English"
++        case .zhHans: return "简体中文"
++        case .zhHant: return "繁體中文"
++        case .ja: return "日本語"
++        case .ko: return "한국어"
++        case .fr: return "Français"
++        case .de: return "Deutsch"
++        case .es: return "Español"
++        }
++    }
++    static func resolve(_ identifier: String, preferred: [String] = Locale.preferredLanguages) -> Self {
++        if let chosen = Self(rawValue: identifier), chosen != .system { return chosen }
++        for tag in preferred {
++            let parts = tag.lowercased().replacingOccurrences(of: "_", with: "-").split(separator: "-")
++            guard let base = parts.first else { continue }
++            if base == "zh" { return parts.contains { ["hant", "tw", "hk", "mo"].contains($0) } ? .zhHant : .zhHans }
++            if let language = Self(rawValue: String(base)), language != .system { return language }
++        }
++        return .en
++    }
++    var locale: Locale { Locale(identifier: rawValue) }
++
++    func text(_ key: String) -> String {
++        guard let translations = Self.strings[key] else { return key }
++        switch self {
++        case .en, .system: return key
++        case .zhHans: return translations[0]
++        case .zhHant:
++            return translations[0].applyingTransform(StringTransform("Simplified-Traditional"), reverse: false) ?? translations[0]
++        case .ja: return translations[1]
++        case .ko: return translations[2]
++        case .fr: return translations[3]
++        case .de: return translations[4]
++        case .es: return translations[5]
++        }
++    }
++
++    private static let strings: [String: [String]] = {
++        var table: [String: [String]] = [:]
++        for row in catalog.split(separator: "\n") {
++            let fields = row.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
++            guard fields.count == 7 else { continue }
++            table[fields[0]] = Array(fields.dropFirst())
++        }
++        return table
++    }()
++
++    // Source text, Simplified Chinese, Japanese, Korean, French, German, Spanish.
++    private static let catalog = """
++On|开启|オン|켜기|Activé|Ein|Activado
++Off|关闭|オフ|끄기|Désactivé|Aus|Desactivado
++Lightweight background textures|轻量背景贴图|軽量な背景テクスチャ|저용량 배경 텍스처|Textures de fond allégées|Leichtere Hintergrundtexturen|Texturas de fondo ligeras
++Texture detail|贴图质量|テクスチャ品質|텍스처 품질|Qualité des textures|Texturqualität|Calidad de texturas
++Applies after restarting the app|重启游戏后生效|アプリの再起動後に適用|앱을 다시 시작하면 적용|Au redémarrage de l’application|Wirksam nach Neustart der App|Se aplica al reiniciar la aplicación
++Low textures|低贴图|低テクスチャ|낮은 텍스처|Textures basses|Niedrige Texturen|Texturas bajas
++Medium textures|中贴图|中テクスチャ|보통 텍스처|Textures moyennes|Mittlere Texturen|Texturas medias
++Original textures|原版贴图|オリジナルテクスチャ|원본 텍스처|Textures d’origine|Originaltexturen|Texturas originales
++Graphics quality|画质|画質|그래픽 품질|Qualité graphique|Grafikqualität|Calidad gráfica
++Low graphics|低画质|低画質|낮은 그래픽|Graphismes bas|Niedrige Grafik|Gráficos bajos
++Medium graphics|中画质|中画質|중간 그래픽|Graphismes moyens|Mittlere Grafik|Gráficos medios
++High graphics|高画质|高画質|높은 그래픽|Graphismes élevés|Hohe Grafik|Gráficos altos
++Set by graphics quality|由画质档决定|画質プリセット|그래픽 설정 적용|Défini par la qualité graphique|Durch Grafikqualität gesetzt|Definido por la calidad gráfica
++Menu language|菜单语言|メニューの言語|메뉴 언어|Langue du menu|Menüsprache|Idioma del menú
++System language|跟随系统|システム言語|시스템 언어|Langue du système|Systemsprache|Idioma del sistema
++ROUTE CONFIG|启动配置|起動設定|시작 설정|CONFIGURATION|STARTKONFIGURATION|CONFIGURACIÓN
++SYSTEM CONFIG|详细配置|詳細設定|상세 설정|CONFIGURATION SYSTÈME|SYSTEMKONFIGURATION|CONFIGURACIÓN DEL SISTEMA
++ALL SETTINGS|全部设置|すべての設定|모든 설정|TOUS LES RÉGLAGES|ALLE EINSTELLUNGEN|TODOS LOS AJUSTES
++NODE|当前选项|選択項目|선택 항목|OPTION|OPTION|OPCIÓN
++LINK|状态|状態|상태|ÉTAT|STATUS|ESTADO
++AVAILABLE|可用|空き|사용 가능|DISPONIBLE|FREI|DISPONIBLE
++PLAY|开始游戏|ゲーム開始|게임 시작|JOUER|SPIELEN|JUGAR
++SYNCING|检查存档|セーブ確認中|저장 확인 중|VÉRIFICATION|PRÜFUNG|COMPROBANDO
++PLAY WITHOUT IT|跳过同步并开始|同期せず開始|동기화 없이 시작|JOUER SANS SYNCHRO|OHNE SYNC SPIELEN|JUGAR SIN SINCRONIZAR
++Done|完成|完了|완료|Terminé|Fertig|Listo
++Cancel|取消|キャンセル|취소|Annuler|Abbrechen|Cancelar
++Try Again|重试|再試行|다시 시도|Réessayer|Erneut versuchen|Reintentar
++Game|游戏|ゲーム|게임|Jeu|Spiel|Juego
++Controls|操作|操作|조작|Commandes|Steuerung|Controles
++Performance|性能|パフォーマンス|성능|Performances|Leistung|Rendimiento
++Saves|存档|セーブ|저장 데이터|Sauvegardes|Spielstände|Partidas guardadas
++System|系统|システム|시스템|Système|System|Sistema
++Frame Rate|帧率|フレームレート|프레임률|Fréquence|Bildrate|Tasa de FPS
++Frame rate|帧率|フレームレート|프레임률|Fréquence d’images|Bildrate|Tasa de FPS
++Frame Gen|插帧|フレーム生成|프레임 생성|Génér. images|Framegen|Generación
++Frame generation|插帧|フレーム生成|프레임 생성|Génération d’images|Frame-Generierung|Generación de fotogramas
++Generated frame size|插帧分辨率|生成解像度|생성 해상도|Résolution de génération|Generierungsauflösung|Resolución de generación
++Console|主机模式|本体モード|콘솔 모드|Mode console|Konsolenmodus|Modo de consola
++Console mode|主机模式|本体モード|콘솔 모드|Mode console|Konsolenmodus|Modo de consola
++Docked|主机模式|ドック接続|독 모드|Mode dock|TV-Modus|Modo base
++Handheld|掌机模式|携帯モード|휴대 모드|Mode portable|Handheld|Modo portátil
++Upscaling|画面升采样|アップスケーリング|업스케일링|Mise à l’échelle|Hochskalierung|Escalado
++Standard|标准|標準|표준|Standard|Standard|Estándar
++Game language|游戏语言|ゲームの言語|게임 언어|Langue du jeu|Spielsprache|Idioma del juego
++Picture|画面比例|画面表示|화면 비율|Affichage|Bildformat|Formato de imagen
++Fit|完整显示|全体表示|화면에 맞춤|Ajuster|Einpassen|Ajustar
++Fill|铺满屏幕|全画面|화면 채우기|Remplir|Ausfüllen|Rellenar
++Frame-rate counter|帧率计数器|FPS表示|FPS 표시|Compteur d’images|FPS-Zähler|Contador de FPS
++Touch feedback|触控反馈|タッチの振動|터치 피드백|Retour tactile|Touch-Feedback|Vibración táctil
++Game rumble|游戏振动|ゲームの振動|게임 진동|Vibration du jeu|Spielvibration|Vibración del juego
++Rumble strength|振动强度|振動の強さ|진동 강도|Intensité des vibrations|Vibrationsstärke|Intensidad de vibración
++Rumble cutoff|振动阈值|振動のしきい値|진동 임계값|Seuil des vibrations|Vibrationsschwelle|Umbral de vibración
++Press a button to join|按键连接手柄|ボタンで参加|버튼을 눌러 참가|Appuyer pour rejoindre|Per Taste beitreten|Pulsa un botón para unirte
++Frame buffering|帧缓冲|フレームのバッファリング|프레임 버퍼링|Mise en mémoire des images|Bildpufferung|Búfer de fotogramas
++Metal 4 pipelines|Metal 4 管线|Metal 4 パイプライン|Metal 4 파이프라인|Pipelines Metal 4|Metal-4-Pipelines|Canalizaciones Metal 4
++Pipeline prebuild|预编译图形管线|パイプラインの事前生成|파이프라인 사전 빌드|Précompilation des pipelines|Pipelines vorab erstellen|Precompilar canalizaciones
++Encode thread|图形编码线程|描画エンコードスレッド|그래픽 인코딩 스레드|Thread d’encodage|Kodier-Thread|Hilo de codificación
++Hold frames when late|延迟时保留帧|遅延時にフレームを保持|지연 시 프레임 유지|Conserver les images en retard|Verspätete Bilder halten|Mantener fotogramas atrasados
++Perf HUD|性能面板|性能 HUD|성능 HUD|HUD perf.|Leistungs-HUD|HUD de rendimiento
++Performance HUD|性能面板|パフォーマンス HUD|성능 HUD|HUD des performances|Leistungs-HUD|HUD de rendimiento
++Tex Saver|贴图省内存|テクスチャ節約|텍스처 절약|Mémo. textures|Textursparen|Ahorro texturas
++Texture saver|贴图内存优化|テクスチャメモリ節約|텍스처 메모리 절약|Économie de mémoire des textures|Texturspeicher sparen|Ahorrar memoria de texturas
++Texture saver strength|贴图优化强度|テクスチャ節約の強さ|텍스처 절약 강도|Niveau d’économie des textures|Textursparstufe|Nivel de ahorro de texturas
++Free unused render targets|释放闲置渲染目标|未使用の描画先を解放|미사용 렌더 타깃 해제|Libérer les cibles de rendu inutilisées|Ungenutzte Renderziele freigeben|Liberar destinos de renderizado inactivos
++Free idle upload memory|释放闲置上传内存|未使用のアップロードメモリを解放|유휴 업로드 메모리 해제|Libérer la mémoire de transfert inutilisée|Ungenutzten Upload-Speicher freigeben|Liberar memoria de subida inactiva
++Light|轻度|弱|약함|Léger|Leicht|Leve
++Strong|强|強|강함|Fort|Stark|Alto
++Strongest|最强|最大|가장 강함|Maximum|Maximal|Máximo
++After 60 s|60 秒后|60 秒後|60초 후|Après 60 s|Nach 60 s|Tras 60 s
++After 20 s|20 秒后|20 秒後|20초 후|Après 20 s|Nach 20 s|Tras 20 s
++Only when reused|仅在再次使用时|再利用時のみ|다시 사용할 때만|À la réutilisation|Nur bei Wiederverwendung|Solo al reutilizar
++Automatic|自动|自動|자동|Automatique|Automatisch|Automático
++Three quarters|四分之三|4 分の 3|4분의 3|Trois quarts|Drei Viertel|Tres cuartos
++Half|一半|半分|절반|Moitié|Halb|Mitad
++ON|开启|オン|켜짐|ACTIF|EIN|SÍ
++OFF|关闭|オフ|꺼짐|INACTIF|AUS|NO
++NEEDS|需要|必要|필요|NÉCESSITE|BENÖTIGT|REQUIERE
++Set at launch|由启动环境设定|起動時に設定|시작 시 설정됨|Défini au lancement|Beim Start festgelegt|Fijado al iniciar
++Set by an env file|由配置文件设定|設定ファイルで指定|설정 파일에서 지정됨|Défini par le fichier env|Durch env-Datei festgelegt|Fijado por el archivo env
++Touch layout|触控布局|タッチ配置|터치 배치|Disposition tactile|Touch-Layout|Diseño táctil
++Orbit + D-pad|Orbit + 方向键|Orbit + 十字キー|Orbit + 방향키|Orbit + croix|Orbit + Steuerkreuz|Orbit + cruceta
++Tap|直接触摸|直接タッチ|직접 터치|Toucher|Tippen|Toque directo
++Cloud saves|云存档|クラウドセーブ|클라우드 저장|Sauvegardes iCloud|iCloud-Spielstände|Partidas en iCloud
++Memory available|可用内存|空きメモリ|사용 가능 메모리|Mémoire disponible|Verfügbarer Speicher|Memoria disponible
++Reset to tested defaults|恢复默认配置|動作確認済みの初期値に戻す|기본 설정 복원|Rétablir les réglages testés|Getestete Vorgaben wiederherstellen|Restaurar ajustes probados
++What iOS lets the game use now.|iOS 当前允许游戏使用的内存。|現在 iOS がゲームに割り当てられるメモリです。|현재 iOS에서 게임에 허용된 메모리입니다.|Mémoire qu’iOS met actuellement à disposition du jeu.|Speicher, den iOS dem Spiel derzeit zur Verfügung stellt.|Memoria que iOS permite usar al juego.
++Brings back all settings this game was tested with.|恢复这款游戏的默认测试配置。|このゲームの動作確認に使った設定に戻します。|이 게임에 사용한 기본 설정으로 돌아갑니다.|Rétablit les réglages utilisés pour tester le jeu.|Stellt die beim Test verwendeten Einstellungen wieder her.|Restaura los ajustes con los que se probó el juego.
++An iCloud Drive folder shared with the Mac app.|和 Mac 应用共用的 iCloud Drive 文件夹。|Mac アプリと共有する iCloud Drive フォルダです。|Mac 앱과 공유하는 iCloud Drive 폴더입니다.|Dossier iCloud Drive partagé avec l’app Mac.|Mit der Mac-App geteilter iCloud-Drive-Ordner.|Carpeta de iCloud Drive compartida con la app de Mac.
++30 is steady in play; 60 can drop frames when the GPU is busy.|30 帧更稳。GPU 负载高时，60 帧可能掉帧。|30 fps は安定します。GPU 負荷が高いと 60 fps でコマ落ちします。|30fps가 더 안정적입니다. GPU 부하가 크면 60fps에서 프레임이 떨어질 수 있습니다.|30 i/s est plus stable. À 60 i/s, des images peuvent sauter si le GPU est chargé.|30 FPS sind stabiler. Bei 60 FPS sind unter GPU-Last Einbrüche möglich.|30 FPS son más estables. A 60 FPS puede haber caídas con carga alta de GPU.
++60 frames shown while the game draws 30.|游戏绘制 30 帧，显示 60 帧。|ゲームは 30 fps で描画し、60 fps で表示します。|게임은 30fps로 그리고 화면에는 60fps로 표시합니다.|60 images affichées pour 30 calculées.|60 Bilder werden angezeigt, 30 berechnet.|Muestra 60 fotogramas cuando el juego dibuja 30.
++Handheld: lower 3D resolution, less GPU work. Docked is sharper and heavier.|掌机模式降低 3D 分辨率和 GPU 负载。主机模式更清晰，负载更高。|携帯モードは 3D 解像度と GPU 負荷が低めです。ドック接続は高画質ですが負荷も高くなります。|휴대 모드는 3D 해상도와 GPU 부하가 낮습니다. 독 모드는 더 선명하지만 부하가 큽니다.|Le mode portable réduit la résolution 3D et la charge GPU. Le dock est plus net et plus exigeant.|Handheld reduziert 3D-Auflösung und GPU-Last. Der TV-Modus ist schärfer und aufwendiger.|El modo portátil reduce la resolución 3D y la carga de GPU. El modo base es más nítido y exigente.
++Large textures leave out their finest levels: far less memory.|省略大贴图最高几级细节，减少显存占用。|大きなテクスチャの細部レベルを省き、メモリを節約します。|큰 텍스처의 세부 레벨을 생략해 메모리를 절약합니다.|Omet les niveaux les plus détaillés des grandes textures pour économiser la mémoire.|Lässt die feinsten Stufen großer Texturen weg und spart Speicher.|Omite los niveles más detallados de las texturas grandes para ahorrar memoria.
++Frame rate, GPU time and memory over the game.|游戏上方显示帧率、GPU 耗时和内存。|ゲームに FPS、GPU 時間、メモリ使用量を重ねて表示します。|게임 위에 프레임률, GPU 시간, 메모리를 표시합니다.|Affiche la fréquence, le temps GPU et la mémoire par-dessus le jeu.|Zeigt FPS, GPU-Zeit und Speicher im Spiel an.|Muestra FPS, tiempo de GPU y memoria sobre el juego.
++Orbit; Orbit + D-pad adds the large D-pad; Tap sends touches to the game (handheld mode only).|Orbit + 方向键会显示大方向键。仅掌机模式可将触摸直接传给游戏。|Orbit + 十字キーは大型十字キー付き。直接タッチは携帯モードのみです。|Orbit + 방향키는 큰 방향키를 추가합니다. 직접 터치는 휴대 모드에서만 쓸 수 있습니다.|Orbit + croix ajoute la grande croix. En mode portable, Toucher transmet les touches au jeu.|Orbit + Steuerkreuz ergänzt ein großes Steuerkreuz. Tippen leitet Berührungen nur im Handheld-Modus ans Spiel weiter.|Orbit + cruceta añade una cruceta grande. El toque directo solo funciona en modo portátil.
++Shows 60 frames a second while the game draws 30: MetalFX makes a frame between each two. Less work and heat than 60 fps, with more input delay than real 60; fast motion can smear.|MetalFX 在游戏绘制的 30 帧之间插入新帧，以 60 帧显示。负载和发热低于原生 60 帧，但延迟较高，快速移动可能有拖影。|MetalFX が 30 fps の合間にフレームを生成します。60 fps の描画より軽くなりますが、入力遅延や速い動きの残像が出ることがあります。|MetalFX가 30fps 사이에 프레임을 생성합니다. 실제 60fps보다 부하와 발열은 적지만 입력 지연과 잔상이 생길 수 있습니다.|MetalFX affiche 60 i/s à partir de 30. La charge et la chaleur diminuent, avec plus de latence et du flou possible en mouvement rapide.|MetalFX erzeugt aus 30 FPS eine Anzeige mit 60 FPS. Das spart Leistung und Wärme, erhöht aber die Eingabelatenz und kann Schlieren erzeugen.|MetalFX muestra 60 FPS a partir de 30. Reduce la carga y el calor, con más latencia y posible desenfoque en movimientos rápidos.
++The size frame generation works at: Automatic steps down while frames drop; Half is the least GPU work and memory, a little softer in motion.|自动模式会在掉帧时降低插帧分辨率。一半最省 GPU 和内存，运动时稍模糊。|自動はコマ落ち時に生成解像度を下げます。半分は最も軽く、動きのある場面が少しぼやけます。|자동은 프레임이 떨어질 때 해상도를 낮춥니다. 절반은 부하가 가장 적지만 움직일 때 약간 흐립니다.|Automatique réduit la résolution si des images sautent. Moitié économise le plus de mémoire et de GPU, avec une image un peu plus douce.|Automatisch senkt die Generierungsauflösung bei Einbrüchen. Halb spart am meisten GPU und Speicher, wirkt in Bewegung aber etwas weicher.|Automático baja la resolución al caer FPS. Mitad ahorra más GPU y memoria, con menos nitidez en movimiento.
++Uses more GPU time and can increase heat.|会增加 GPU 耗时和发热。|GPU 負荷や発熱が増えることがあります。|GPU 사용과 발열이 늘 수 있습니다.|Peut augmenter la charge GPU et la chaleur.|Kann GPU-Zeit und Wärme erhöhen.|Puede aumentar la carga de GPU y el calor.
++This game's files do not list its languages, so some of these may not be in the game. It may then show another one.|游戏可能只包含其中部分语言，缺少所选语言时会回退。|選んだ言語がゲームに含まれていない場合は、別の言語で表示します。|선택한 언어가 게임에 없으면 다른 언어가 표시됩니다.|Le jeu peut afficher une autre langue si la langue choisie est absente.|Fehlt die gewählte Sprache in den Spieldateien, zeigt das Spiel eine verfügbare Sprache an.|Si el idioma elegido no está en los archivos del juego, se mostrará otro disponible.
++Fill crops the game's 16:9 picture to cover the screen. Health bars, subtitles or maps near the edges can be cut off. A full-screen picture without cropping needs a patch for each game.|铺满会裁切画面，边缘附近的血条、字幕或地图可能被裁掉。|全画面表示は映像を切り取るため、端の体力バー、字幕、地図が見切れる場合があります。|화면을 채우면 가장자리의 체력 표시, 자막 또는 지도가 잘릴 수 있습니다.|Remplir recadre l’image et peut couper la vie, les sous-titres ou la carte près des bords.|Ausfüllen beschneidet das Bild. Lebensanzeige, Untertitel oder Karte können am Rand abgeschnitten werden.|Rellenar recorta la imagen y puede cortar las barras de vida, subtítulos o mapas cerca del borde.
++Up to one frame more display latency.|显示延迟最多增加一帧。|表示が最大 1 フレーム遅れます。|표시 지연이 최대 한 프레임 늘어납니다.|Jusqu’à une image de latence supplémentaire.|Bis zu ein Bild zusätzliche Anzeigelatenz.|Hasta un fotograma extra de latencia.
++Keeps a pipeline archive; uses more memory.|缓存图形管线，会使用更多内存。|パイプラインを保存するため、メモリ使用量が増えます。|파이프라인 보관에 메모리를 더 사용합니다.|Conserve une archive des pipelines et utilise plus de mémoire.|Behält ein Pipeline-Archiv und benötigt mehr Speicher.|Mantiene un archivo de canalizaciones y usa más memoria.
++The first start waits a few minutes for it, once.|首次启动时会等待几分钟。|初回起動時だけ数分かかります。|처음 실행할 때만 몇 분이 걸립니다.|Prend quelques minutes au premier lancement.|Dauert beim ersten Start einige Minuten.|Tarda unos minutos solo en el primer inicio.
++Leaves the finest detail levels out of large textures: much less GPU memory, textures a little softer up close.|省略大贴图最高几级细节，显著节省显存。近处的贴图会稍模糊。|大きなテクスチャの細部を省いて GPU メモリを節約します。近くでは少しぼやけます。|큰 텍스처의 세부 레벨을 빼 GPU 메모리를 절약합니다. 가까이서 약간 흐릿합니다.|Réduit la mémoire GPU en omettant les détails fins des grandes textures, un peu moins nettes de près.|Spart GPU-Speicher, indem feinste Texturstufen entfallen. Aus der Nähe sind Texturen etwas weicher.|Ahorra memoria de GPU al omitir detalles finos de las texturas grandes, algo menos nítidas de cerca.
++Each step leaves one more level out: about three quarters less memory for each large texture, softer again.|每提高一档会再省略一级细节，贴图更模糊并节省更多内存。|強さを 1 段階上げるごとに細部を 1 レベル省き、画質とメモリ使用量を下げます。|한 단계마다 세부 레벨을 하나 더 빼 화질과 메모리 사용량을 낮춥니다.|Chaque degré omet un niveau de détail supplémentaire, économisant plus de mémoire.|Jede Stufe lässt eine Detailstufe mehr aus und spart weiteren Speicher.|Cada nivel omite un grado adicional de detalle y ahorra más memoria.
++Sooner gives memory back faster; a target needed again is made anew.|更早释放可以更快腾出内存。需要时会重新创建。|早く解放するとメモリが空きます。再び必要になれば作り直します。|빨리 해제하면 메모리를 더 빨리 돌려줍니다. 필요해지면 다시 만듭니다.|Une libération plus rapide rend la mémoire plus tôt. Les cibles sont recréées au besoin.|Früheres Freigeben schafft schneller Speicher. Benötigte Ziele werden erneut erstellt.|Libera la memoria antes. Los destinos se vuelven a crear cuando hacen falta.
++Choose a folder in iCloud Drive…|选择 iCloud Drive 文件夹…|iCloud Drive フォルダを選択…|iCloud Drive 폴더 선택…|Choisir un dossier iCloud Drive…|iCloud-Drive-Ordner wählen…|Elegir carpeta de iCloud Drive…
++Choose a different folder…|选择其他文件夹…|別のフォルダを選択…|다른 폴더 선택…|Choisir un autre dossier…|Anderen Ordner wählen…|Elegir otra carpeta…
++Turn off cloud saves|关闭云存档|クラウドセーブを無効にする|클라우드 저장 끄기|Désactiver les sauvegardes iCloud|iCloud-Spielstände deaktivieren|Desactivar guardado en iCloud
++Cloud folder saved.|已保存云存档文件夹。|クラウドフォルダを保存しました。|클라우드 폴더를 저장했습니다.|Dossier iCloud enregistré.|iCloud-Ordner gespeichert.|Carpeta de iCloud guardada.
++Choose another folder.|请换一个文件夹。|別のフォルダを選んでください。|다른 폴더를 선택하세요.|Choisissez un autre dossier.|Wähle einen anderen Ordner.|Elige otra carpeta.
++The saved folder is no longer readable. Choose it again.|之前的文件夹无法读取，请重新选一次。|保存済みのフォルダを読み取れません。再選択してください。|저장한 폴더를 읽을 수 없습니다. 다시 선택하세요.|Le dossier enregistré est illisible. Choisissez-le à nouveau.|Der gespeicherte Ordner kann nicht mehr gelesen werden. Wähle ihn erneut.|No se puede leer la carpeta guardada. Vuelve a elegirla.
++Choose the same iCloud Drive folder on both devices to sync saves.|在两台设备上选择同一个 iCloud Drive 文件夹来同步存档。|両方のデバイスで同じ iCloud Drive フォルダを選ぶと同期できます。|두 기기에서 같은 iCloud Drive 폴더를 선택해 동기화합니다.|Choisissez le même dossier iCloud Drive sur les deux appareils pour synchroniser.|Wähle auf beiden Geräten denselben iCloud-Drive-Ordner, um zu synchronisieren.|Elige la misma carpeta de iCloud Drive en ambos dispositivos para sincronizar.
++Which save do you want to play?|使用哪个存档？|どのセーブで遊びますか？|어떤 저장을 사용할까요?|Quelle sauvegarde utiliser ?|Welchen Spielstand verwenden?|¿Qué partida quieres usar?
++The cloud save didn't come|云存档未下载|クラウドセーブを取得できませんでした|클라우드 저장을 받지 못했습니다|Sauvegarde iCloud indisponible|iCloud-Spielstand nicht verfügbar|Partida de iCloud no disponible
++This device|此设备|このデバイス|이 기기|Cet appareil|Dieses Gerät|Este dispositivo
++Play This iPhone's Save|使用这台 iPhone 的存档|この iPhone のセーブで遊ぶ|이 iPhone의 저장으로 시작|Jouer avec la sauvegarde de cet iPhone|Spielstand dieses iPhone verwenden|Jugar con la partida de este iPhone
++Both saves changed. The other save is kept in backups.|两个存档都发生了变化。另一个会保留在备份中。|両方のセーブが変更されました。もう一方はバックアップに残ります。|두 저장 모두 변경되었습니다. 다른 저장은 백업에 남습니다.|Les deux sauvegardes ont changé. L’autre est conservée en sauvegarde.|Beide Spielstände wurden verändert. Der andere bleibt als Sicherung erhalten.|Ambas partidas cambiaron. La otra se conserva en la copia de seguridad.
++You can play locally. Upload resumes after the next successful comparison.|可以使用本地存档，待下次成功比对后再上传。|ローカルで遊べます。次回の比較が成功するとアップロードを再開します。|로컬에서 플레이할 수 있습니다. 다음 비교가 성공하면 업로드를 재개합니다.|Vous pouvez jouer en local. L’envoi reprendra après une comparaison réussie.|Du kannst lokal spielen. Der Upload wird nach einem erfolgreichen Vergleich fortgesetzt.|Puedes jugar en local. La subida se reanuda tras una comparación correcta.
++The Earth rising over the lunar surface|地球从月面升起|月面から昇る地球|달 표면 위로 떠오르는 지구|La Terre se lève au-dessus de la Lune|Die Erde geht über dem Mond auf|La Tierra sale sobre la superficie lunar
++"""
++}
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index 63f8a0b..a5564a1 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -164,8 +164,12 @@ static void launcher_done(void) { [g_root startGame]; }
+             setenv("DM_SCREEN_ASPECT", v, 1); LOG("front end: picture shape auto: window %.0fx%.0f points (%.3f:1) → DM_SCREEN_ASPECT=%s", sz.width, sz.height, r, v);
+         }
+     }
++#ifdef DM_PRAGMATA_ULTRAWIDE
++    g_picture_aspect = 21.0 / 9.0;
++    LOG("PRAGMATA: 21:9 perspective presentation enabled");
++#endif
+     self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
+-    if (self.fill) LOG("front end: picture Fill (DM_PICTURE_FIT=fill), the 16:9 picture covers the screen in landscape and its edges are cropped");
++    if (self.fill) LOG("front end: picture Fill (DM_PICTURE_FIT=fill), the %.3f:1 picture covers the screen in landscape and its edges are cropped", g_picture_aspect);
+     self.view.clipsToBounds = YES;   // with Fill the game view is larger than the screen
+     self.view.window.traitOverrides.preferredContentSizeCategory = UIContentSizeCategorySmall;   // UIKit draws the in-game menu (GameMenu.swift) in this window: it keeps one compact text size over the game, whatever the system's text size
+     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
+diff --git a/dm/ios/project.yml b/dm/ios/project.yml
+index 20b3cce..7e34177 100644
+--- a/dm/ios/project.yml
++++ b/dm/ios/project.yml
+@@ -15,7 +15,10 @@ targets:
+       - sdk: AVFAudio.framework  # AVAudioSession is used by front_ios and phone haptics, not the Mac host.
+     sources:
+       - path: Sources
+-        excludes: [Info.plist]  # generated per project under Gen/, so games never share the generated plist
++        excludes: [Info.plist, PragmataTouch.png]  # generated per project under Gen/, so games never share the generated plist
++      - path: Sources/PragmataTouch.png
++        optional: true
++        buildPhase: resources
+       - path: Gen/embed.S
+       - path: Gen/dm          # Rewriter tables (*.fixups.tsv / gates / cuts / obs) + shader map / c1 list / warm-up list
+         type: folder
+@@ -82,7 +85,7 @@ targets:
+       TARGETED_DEVICE_FAMILY: "1,2"
+       ENABLE_BITCODE: NO
+       GCC_C_LANGUAGE_STANDARD: gnu11
+-      OTHER_CFLAGS: $(inherited) -mcpu=apple-m1   # the oldest chip the app supports (an M1 iPad; iPhones from the A17 Pro, as the games need BC textures), the Mac build's default too: it has the LSE atomics the host assembly uses, which the default baseline does not accept. Not newer: dav1d turns on every feature the target promises, and the A18 target (its I8MM) stopped an M1 iPad with SIGILL in the AV1 decoder (dm/ios/tests/test_cpu_target.py)
++      OTHER_CFLAGS: $(inherited) -mcpu=apple-m1 -DDM_PRAGMATA_ULTRAWIDE=1   # the oldest chip the app supports (an M1 iPad; iPhones from the A17 Pro, as the games need BC textures), the Mac build's default too: it has the LSE atomics the host assembly uses, which the default baseline does not accept. Not newer: dav1d turns on every feature the target promises, and the A18 target (its I8MM) stopped an M1 iPad with SIGILL in the AV1 decoder (dm/ios/tests/test_cpu_target.py)
+       CLANG_ENABLE_OBJC_ARC: YES
+       SWIFT_VERSION: "5.0"                         # Launcher.swift (SwiftUI)
+       SWIFT_OBJC_BRIDGING_HEADER: Sources/DmIOS-Bridging-Header.h   # CloudSaves.h (the cloud-save folder pick)
