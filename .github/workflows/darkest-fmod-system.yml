@@ -1,0 +1,19 @@
+name: Verify FMOD Apple system imports
+on:
+  push:
+    branches: [build/darkest-fmod-system-20261127-080533]
+jobs:
+  sdk:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Link against the Xcode iPhoneOS SDK
+        run: |
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=18.0 -dynamiclib \
+            -framework AudioToolbox -framework AVFoundation -lobjc verify-fmod-apple.s -o verify-fmod-apple.dylib
+          xcrun nm -m -u verify-fmod-apple.dylib
+          xcrun otool -L verify-fmod-apple.dylib
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fmod-apple-system-symbols
+          path: verify-fmod-apple.dylib
