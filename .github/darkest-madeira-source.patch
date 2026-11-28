@@ -182,15 +182,26 @@ index cf86a5a..9553eb0 100644
  				MTL_FAST_MATH = YES;
  				SDKROOT = iphoneos;
 diff --git a/app/Madeira/ContentView.swift b/app/Madeira/ContentView.swift
-index 0c85315..97b2222 100644
+index 0c85315..e3583d7 100644
 --- a/app/Madeira/ContentView.swift
 +++ b/app/Madeira/ContentView.swift
-@@ -382,7 +382,27 @@ final class MetalBackedView: UIView {
+@@ -356,7 +356,9 @@ final class MetalBackedView: UIView {
+         }
+         let client = pointerRect()
+         let g = GameSurfaceLayout.map(point: p, guest: client.size, bounds: gameRect(), mode: .stretch)
+-        return (Int32(client.minX + g.x), Int32(client.minY + g.y))
++        let result = CGPoint(x: client.minX + g.x, y: client.minY + g.y)
++        if darkestTouch { Self.cursor = result }
++        return (Int32(result.x), Int32(result.y))
+     }
+ 
+     // ==================================================================
+@@ -382,7 +384,27 @@ final class MetalBackedView: UIView {
      private static let tmSlop: CGFloat = 10
      private let F_MDOWN: UInt32 = 0x20, F_MUP: UInt32 = 0x40
  
 -    private var touchPointerMode: Bool { InputSettings.shared.touchMode }
-+    private var darkestTouch: Bool { DarkestPort.uses(LibraryModel.shared.current) }
++    private var darkestTouch: Bool { DarkestPort.uses(LibraryModel.shared.activeEntry) }
 +    private var touchPointerMode: Bool {
 +        darkestTouch ? DarkestHUDModel.shared.config.direct : InputSettings.shared.touchMode
 +    }
@@ -214,7 +225,7 @@ index 0c85315..97b2222 100644
  
      private func tmResetGesture() {
          tmDownPoints.removeAll()
-@@ -423,19 +443,29 @@ final class MetalBackedView: UIView {
+@@ -423,19 +445,29 @@ final class MetalBackedView: UIView {
      private func touchModeBegan(_ touches: Set<UITouch>) {
          guard !tmResolved else { return }   // a finger joining mid-drag changes nothing
          for t in touches where tmDownPoints[ObjectIdentifier(t)] == nil {
@@ -248,7 +259,7 @@ index 0c85315..97b2222 100644
              }
          } else {
              // A second or third finger: only a multi-finger tap is possible now.
-@@ -488,13 +518,17 @@ final class MetalBackedView: UIView {
+@@ -488,13 +520,17 @@ final class MetalBackedView: UIView {
              tmResetGesture()
              return
          }
@@ -267,7 +278,7 @@ index 0c85315..97b2222 100644
              let (x, y) = mapPoint(mid)
              postSurfaceTouchDown(x, y)
              postSurfaceTouchUp(x, y)
-@@ -511,7 +545,7 @@ final class MetalBackedView: UIView {
+@@ -511,7 +547,7 @@ final class MetalBackedView: UIView {
              tmResetGesture()
              return
          }
@@ -276,7 +287,7 @@ index 0c85315..97b2222 100644
      }
  
      // ==================================================================
-@@ -602,7 +636,8 @@ final class MetalBackedView: UIView {
+@@ -602,7 +638,8 @@ final class MetalBackedView: UIView {
          return CGPoint(x: x / n, y: y / n)
      }
      private func activeTouches(_ event: UIEvent?) -> [UITouch] {
@@ -286,7 +297,7 @@ index 0c85315..97b2222 100644
      }
  
      // Direct touches that began while TouchMouseGate was suppressing stay
-@@ -633,7 +668,7 @@ final class MetalBackedView: UIView {
+@@ -633,7 +670,7 @@ final class MetalBackedView: UIView {
          if HardwareInput.shared.interceptTouches(touches, event, .began) { return }
          guard let touches = tmgFilter(touches, .began) else { return }
          if touchPointerMode { touchModeBegan(touches); return }
@@ -295,7 +306,7 @@ index 0c85315..97b2222 100644
              guard let t = touches.first else { return }
              let (x, y) = mapTouch(t)
              postSurfaceTouchDown(x, y)
-@@ -667,7 +702,7 @@ final class MetalBackedView: UIView {
+@@ -667,7 +704,7 @@ final class MetalBackedView: UIView {
                    !self.movedBeyondSlop, !self.twoFingerActive,
                    // ml643: in mouse-look the finger is the CAMERA, not a pointer.
                    // Holding still to line up a shot must not press the mouse.
@@ -304,7 +315,7 @@ index 0c85315..97b2222 100644
              self.dragActive = true
              self.dragTouch = t
              self.postPointer(self.F_LDOWN)
-@@ -680,7 +715,7 @@ final class MetalBackedView: UIView {
+@@ -680,7 +717,7 @@ final class MetalBackedView: UIView {
          if HardwareInput.shared.interceptTouches(touches, event, .moved) { return }
          guard let touches = tmgFilter(touches, .moved) else { return }
          if touchPointerMode { touchModeMoved(touches, event); return }
@@ -313,7 +324,7 @@ index 0c85315..97b2222 100644
              guard let t = touches.first else { return }
              let (x, y) = mapTouch(t)
              postSurfaceTouchMove(x, y)
-@@ -735,7 +770,7 @@ final class MetalBackedView: UIView {
+@@ -735,7 +772,7 @@ final class MetalBackedView: UIView {
           * slides left, so a target to the RIGHT of the crosshair is pulled onto it
           * by dragging RIGHT. That is the same sign as a mouse. Negate both terms
           * for content-drag (finger-follows-world) feel. */
@@ -322,7 +333,7 @@ index 0c85315..97b2222 100644
              let sens = CGFloat(InputSettings.shared.sensRel)
              relCarryX += dx * sens
              relCarryY += dy * sens
-@@ -762,7 +797,7 @@ final class MetalBackedView: UIView {
+@@ -762,7 +799,7 @@ final class MetalBackedView: UIView {
          if HardwareInput.shared.interceptTouches(touches, event, .ended) { return }
          guard let touches = tmgFilter(touches, .ended) else { return }
          if touchPointerMode { touchModeEnded(touches, event); return }
@@ -331,7 +342,7 @@ index 0c85315..97b2222 100644
              guard let t = touches.first else { return }
              let (x, y) = mapTouch(t)
              postSurfaceTouchUp(x, y)
-@@ -772,7 +807,7 @@ final class MetalBackedView: UIView {
+@@ -772,7 +809,7 @@ final class MetalBackedView: UIView {
          if twoFingerActive {
              if activeTouches(event).isEmpty {
                  if !twoFingerMoved && now - twoFingerStartTime < 0.40
@@ -340,7 +351,7 @@ index 0c85315..97b2222 100644
                      postPointer(F_RDOWN)
                      postPointer(F_RUP)
                  }
-@@ -795,7 +830,8 @@ final class MetalBackedView: UIView {
+@@ -795,7 +832,8 @@ final class MetalBackedView: UIView {
          // stationary release before the 0.5s drag threshold = click.
          // ml643: NOT in relative mode — every small aim adjustment would fire the
          // weapon. Left/right click are on-screen buttons there instead.
@@ -350,7 +361,7 @@ index 0c85315..97b2222 100644
              fputs("[trackpad] ended: click\n", stderr)
              postPointer(F_LDOWN)
              postPointer(F_LUP)
-@@ -806,7 +842,7 @@ final class MetalBackedView: UIView {
+@@ -806,7 +844,7 @@ final class MetalBackedView: UIView {
          if HardwareInput.shared.interceptTouches(touches, event, .cancelled) { return }
          guard let touches = tmgFilter(touches, .cancelled) else { return }
          if touchPointerMode { touchModeCancelled(touches); return }
@@ -359,7 +370,7 @@ index 0c85315..97b2222 100644
              guard let t = touches.first else { return }
              let (x, y) = mapTouch(t)
              postSurfaceTouchUp(x, y)
-@@ -1320,18 +1356,19 @@ struct ContentView: View {
+@@ -1320,18 +1358,19 @@ struct ContentView: View {
           * two-column selection behaviour. */
          NavigationStack {
              Group {
@@ -385,7 +396,7 @@ index 0c85315..97b2222 100644
              .toolbarBackground(.regularMaterial, for: .navigationBar)
              // The library keeps a material bar only before iOS 26. From iOS 26 the
              // system draws its soft scroll edge effect instead: content scrolls
-@@ -2564,6 +2601,17 @@ struct ContentView: View {
+@@ -2564,6 +2603,17 @@ struct ContentView: View {
      /// Play in the library (Library.swift): checks that a session can start,
      /// applies the entry's launch profile and runs the same full sequence as the
      /// developer interface's buttons.
@@ -403,7 +414,7 @@ index 0c85315..97b2222 100644
      private func launchLibraryEntry(_ entry: LibraryEntry) {
          // madeira-bcd: a game seen for the first time starts with Madeira's recommended
          // settings (GameRecommendationsApply.swift).
-@@ -2672,6 +2720,10 @@ struct ContentView: View {
+@@ -2672,6 +2722,10 @@ struct ContentView: View {
              GOGGalaxy.shared.stop()
              library.error = "The executable path or launch arguments are too long."; return
          }
@@ -414,7 +425,7 @@ index 0c85315..97b2222 100644
          entry.configureLaunch()
          // madeira-bcd: the game's own options (LibraryBCD.swift).
          BCDLaunch.applyLibrary(entry)
-@@ -2680,7 +2732,7 @@ struct ContentView: View {
+@@ -2680,7 +2734,7 @@ struct ContentView: View {
          // through Madeira Dock above gets its own from ntdll, once Valve's client starts it.
          let program = entry.desktop == true ? "explorer.exe"
              : entry.launchWindowsPath.split(separator: "\\").last.map(String.init) ?? entry.launchWindowsPath
@@ -423,12 +434,12 @@ index 0c85315..97b2222 100644
          library.begin(entry)
          runWineFullSequence(profile: entry)
      }
-@@ -4229,6 +4281,13 @@ final class TouchControlsModel: ObservableObject {
+@@ -4229,6 +4283,13 @@ final class TouchControlsModel: ObservableObject {
  /// the game underneath — mouse-look must keep working between the buttons.
  final class ControlsWindow: UIWindow {
      override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
 +        let library = LibraryModel.shared
-+        if DarkestPort.uses(library.current) {
++        if DarkestPort.uses(library.activeEntry) {
 +            if library.blocksGameplayTouch || DarkestHUDModel.shared.hits(point, in: bounds) {
 +                return super.hitTest(point, with: event)
 +            }
@@ -437,7 +448,7 @@ index 0c85315..97b2222 100644
          let m = TouchControlsModel.shared
          // Edit mode owns the whole screen: drags and the scale pinch must not
          // leak through and swing the camera while you are arranging buttons.
-@@ -4242,7 +4301,6 @@ final class ControlsWindow: UIWindow {
+@@ -4242,7 +4303,6 @@ final class ControlsWindow: UIWindow {
          // A library session (Library.swift), in either orientation: its in-game
          // menu and starting screen take every touch; otherwise only its menu
          // button, its performance overlay and the touch controls do.
@@ -445,24 +456,52 @@ index 0c85315..97b2222 100644
          // A Play getting ready: its starting screen takes every touch.
          if library.preparing != nil { return super.hitTest(point, with: event) }
          // The library itself, between sessions (a start that did not happen): nothing here.
-@@ -4309,7 +4367,10 @@ struct TouchControlsOverlay: View {
-             ZStack(alignment: .top) {
+@@ -4300,13 +4360,26 @@ struct TouchControlsOverlay: View {
+ 
+     var body: some View {
+         GeometryReader { geo in
++            if DarkestPort.uses(library.activeEntry) {
++                if library.blocksGameplayTouch { LibraryHUD() }
++                else { DarkestHUD() }
++            } else {
++                standardControls(geo)
++            }
++        }
++        .ignoresSafeArea()
++        .statusBarHidden(library.current != nil)
++        .persistentSystemOverlays(library.current != nil ? .hidden : .automatic)
++    }
++
++    private func standardControls(_ geo: GeometryProxy) -> some View {
+             // Landscape only; portrait keeps the existing key row and joystick.
+             // A library session is full screen in either orientation, and its
+             // HUD (menu button, starting screen, in-game menu) replaces the top
+             // bar; the controls hide while its menu or starting screen is up.
+             let session = library.current != nil || library.preparing != nil
+             let landscape = geo.size.width > geo.size.height || session
+-            ZStack(alignment: .top) {
++            return ZStack(alignment: .top) {
                  // The library between sessions (the window came up for a start that did not
                  // happen) draws nothing over the library's own screens.
--                if landscape && !(library.enabled && !session && !m.editing) {
-+                if DarkestPort.uses(library.current) {
-+                    if library.blocksGameplayTouch { LibraryHUD() }
-+                    else { DarkestHUD() }
-+                } else if landscape && !(library.enabled && !session && !m.editing) {
-                     if m.editing {
-                         Color.clear.contentShape(editorCanvas(geo.size))
-                             .onTapGesture { m.selected = nil; zones.selected = nil }
+                 if landscape && !(library.enabled && !session && !m.editing) {
+@@ -4340,10 +4413,6 @@ struct TouchControlsOverlay: View {
+             .onChange(of: m.editing) { _, _ in configureGamepad(landscape: landscape) }
+             .onChange(of: library.blocksGameplayTouch) { _, _ in configureGamepad(landscape: landscape) }
+             .onDisappear { GamepadInput.shared.configureTouch(controls: []); TouchMouseGate.padOverlay = false }
+-        }
+-        .ignoresSafeArea()
+-        .statusBarHidden(library.current != nil)
+-        .persistentSystemOverlays(library.current != nil ? .hidden : .automatic)
+     }
+ 
+     /// The dismissal gesture must never take a control's drag on iOS 26.
 diff --git a/app/Madeira/DarkestHUD.swift b/app/Madeira/DarkestHUD.swift
 new file mode 100644
-index 0000000..3af764a
+index 0000000..bad5fa3
 --- /dev/null
 +++ b/app/Madeira/DarkestHUD.swift
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,339 @@
++import Combine
 +import SwiftUI
 +import UIKit
 +
@@ -803,7 +842,7 @@ index 0000000..3af764a
 +}
 diff --git a/app/Madeira/DarkestPort.swift b/app/Madeira/DarkestPort.swift
 new file mode 100644
-index 0000000..cbb93bf
+index 0000000..be6ee37
 --- /dev/null
 +++ b/app/Madeira/DarkestPort.swift
 @@ -0,0 +1,276 @@
@@ -971,7 +1010,7 @@ index 0000000..cbb93bf
 +        }
 +        entry.title = "暗黑地牢"
 +        entry.resolution = ResolutionChoices.defaultValue
-+        entry.display = DisplayMode.fit.rawValue
++        entry.display = DisplayMode.aspect.rawValue
 +        entry.fpsMode = 1
 +        return entry
 +    }
