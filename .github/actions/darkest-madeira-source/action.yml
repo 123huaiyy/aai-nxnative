@@ -14,7 +14,7 @@ runs:
         git fetch --depth=1 https://github.com/willfaust/Madeira.git fbad430410b4075192166172447c859714726de9
         git checkout --detach FETCH_HEAD
         git apply --index "$RUNNER_TEMP/darkest-madeira-source.patch"
-        [ "$(git write-tree)" = "5db9a4377cdd712a7ce82d692ef0284ad07844b4" ]
+        [ "$(git write-tree)" = "f7c6d695518a65bbfb8492f2e71705fd1d448100" ]
         git -c user.name='Madeira CI' -c user.email='ci@users.noreply.github.com' commit -m 'Materialize verified Darkest Dungeon port'
         if [ "${{ inputs.submodules }}" = recursive ]; then
           git submodule update --init --recursive
