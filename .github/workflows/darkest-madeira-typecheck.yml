@@ -1,0 +1,24 @@
+name: Darkest Dungeon iOS type check
+on:
+  push:
+    branches: [build/darkest-madeira-typecheck-20261128-203436]
+permissions:
+  contents: read
+jobs:
+  typecheck:
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/darkest-madeira-source
+        with:
+          submodules: 'false'
+      - name: Type check the app with the iPhoneOS SDK
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, subprocess
+          root=pathlib.Path('app/Madeira')
+          sdk=subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-path'],text=True).strip()
+          files=sorted(str(p) for p in root.rglob('*.swift'))
+          subprocess.run(['xcrun','swiftc','-typecheck','-whole-module-optimization','-swift-version','5','-parse-as-library','-sdk',sdk,'-target','arm64-apple-ios18.0','-import-objc-header','app/Madeira/Madeira-Bridging-Header.h',*files],check=True)
+          PY
