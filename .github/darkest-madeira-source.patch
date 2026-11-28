@@ -1,0 +1,1227 @@
+diff --git a/.github/workflows/build-ipa.yml b/.github/workflows/build-ipa.yml
+new file mode 100644
+index 0000000..d36b08c
+--- /dev/null
++++ b/.github/workflows/build-ipa.yml
+@@ -0,0 +1,21 @@
++name: Darkest Dungeon unsigned IPA
++
++on:
++  push:
++    branches: [main, 'build/darkest-madeira-*']
++  workflow_dispatch:
++    inputs:
++      configuration:
++        description: Xcode build configuration
++        type: choice
++        default: Release
++        options: [Release, Debug]
++
++permissions:
++  contents: read
++
++jobs:
++  compile:
++    uses: ./.github/workflows/build.yml
++    with:
++      configuration: ${{ inputs.configuration || 'Release' }}
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index 71a7976..5c2dea6 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -1,14 +1,19 @@
+ name: Build IPA
+ 
+ on:
+-  push:
+-    branches: [main, 'codex/pr-build-*']
+-  pull_request:
+-  workflow_dispatch:
++  workflow_call:
++    inputs:
++      configuration:
++        type: string
++        required: true
+ 
+ permissions:
+   contents: read
+ 
++env:
++  CONFIGURATION: ${{ inputs.configuration }}
++  MADEIRA_DARKEST_UNSIGNED: '1'
++
+ concurrency:
+   group: ipa-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+   cancel-in-progress: true
+@@ -38,6 +43,11 @@ jobs:
+           python3 tests/host/check-runtime-components.py
+       - name: Check touch control layouts and editor
+         run: python3 tests/host/check-control-presets.py
++      - name: Check Darkest Dungeon inputs and app configuration
++        run: |
++          test "$CONFIGURATION" = Release || test "$CONFIGURATION" = Debug
++          plutil -lint app/Madeira/Info.plist app/Madeira.xcodeproj/project.pbxproj
++          xcrun swiftc -frontend -parse app/Madeira/DarkestPort.swift app/Madeira/DarkestHUD.swift
+       - name: Check Steam connection recovery
+         if: hashFiles('tests/host/check-steam-cm-transport.py') != ''
+         run: python3 tests/host/check-steam-cm-transport.py
+@@ -73,10 +83,11 @@ jobs:
+           test -s dist/Madeira.ipa
+           unzip -tq dist/Madeira.ipa
+           python3 tools/build/runtime-components.py ipa dist/Madeira.ipa
++          cp dist/Madeira.ipa dist/DarkestDungeon-iOS-Madeira-unsigned.ipa
+       - uses: actions/upload-artifact@v4
+         with:
+-          name: Madeira-ipa
+-          path: dist/Madeira.ipa
++          name: DarkestDungeon-iOS-Madeira-unsigned.ipa
++          path: dist/DarkestDungeon-iOS-Madeira-unsigned.ipa
+           if-no-files-found: error
+           overwrite: true
+           compression-level: 0
+@@ -396,14 +407,16 @@ jobs:
+           merge-multiple: true
+       - name: Build IPA
+         run: tools/build-ipa.sh
++      - name: Stage validated IPA
++        run: cp dist/Madeira.ipa dist/DarkestDungeon-iOS-Madeira-unsigned.ipa
+       - uses: actions/cache/save@v4
+         with:
+           key: ${{ needs.plan.outputs.ipa }}
+           path: dist/Madeira.ipa
+       - uses: actions/upload-artifact@v4
+         with:
+-          name: Madeira-ipa
+-          path: dist/Madeira.ipa
++          name: DarkestDungeon-iOS-Madeira-unsigned.ipa
++          path: dist/DarkestDungeon-iOS-Madeira-unsigned.ipa
+           if-no-files-found: error
+           overwrite: true
+           compression-level: 0
+diff --git a/PORT_AUDIT.md b/PORT_AUDIT.md
+new file mode 100644
+index 0000000..f230c2d
+--- /dev/null
++++ b/PORT_AUDIT.md
+@@ -0,0 +1,19 @@
++# Madeira 基线审计
++
++基线为 `willfaust/Madeira` 的 `main`，提交 `fbad430410b4075192166172447c859714726de9`。新仓库首提交保留相同的 Git 树与四个子模块指针。`main` 已有桌面 OpenGL 实现。开放 PR #595 面向 32 位 OpenGL 启动，暗黑地牢优先使用 64 位程序。
++
++| 子系统 | 上游源码 |
++| --- | --- |
++| Prefix | `app/Madeira/WineProcessBridge.m` 的 `madeira_seed_prefix_if_needed` 在 wineserver 前解开 `prefix-template.tar.gz`，建立 `dosdevices/c:`。`wineserver_start` 在 `app/Madeira/WineServerBridge.m`。 |
++| 启动 | `app/Madeira/ContentView.swift` 的 `launchLibraryEntry`、`jitReadyForLaunch`、`startLibraryEntry`、`runWineFullSequence`。`app/Madeira/Library.swift` 的 `LibraryEntry.configureLaunch` 导出程序、参数、工作目录和显示设置。`wine_process_start` 启动 `wine_process_thread`。 |
++| FEX | `app/Madeira/FEXBridge.mm` 的 `fex_initialize` 初始化宿主测试用 FEX；正式 x64 游戏使用 `arm64ec-windows/xtajit64.dll`。`tools/build/build-fex-ios.sh`、`build/fex-arm64ec/build.sh` 与 `tools/build/runtime-components.json` 固定其来源与构建。 |
++| 沙盒 | `LibraryEntry.hostDrive` 定义 `Documents/wine/drive_c`。`app/Madeira/Info.plist` 的 `UIFileSharingEnabled` 和 `LSSupportsOpeningDocumentsInPlace` 原本就是 `true`。Windows 运行用户名通常是 `mobile`，模板还有 `madeira`。Wine 启动时修复这两个用户的 Shell 文件夹。 |
++| 会话日志 | `app/Madeira/LogStore.swift` 的 `startSessionLog` 为 `Documents/madeira-log.txt` 创建硬链接。`WineProcessBridge.m` 的 `wine_process_thread` 将 Wine 的 stdout 和 stderr 写入同一个文件。 |
++| OpenGL | `WineProcessBridge.m` 读取 `gl-backend` 与 `MADEIRA_GL_BACKEND`，设置 `MADEIRA_GL_DIR`。`build/win32u-unix/opengl_ios.c` 的 `zink_init` 加载 `libOSMesa.dylib` 和 `libMoltenVK.dylib`，先探测 3.3 Core。Mesa 版本覆盖默认 `4.1`，GLSL 覆盖默认 `410`。GLES 3.0 是上游备用路径。 |
++| Vulkan 与缓存 | `zink_init` 优先读 `gl-vulkan`，未设置时读 `MADEIRA_GL_VULKAN`，默认 MoltenVK。该函数设置 `ZINK_VULKAN_LIBRARY`、`GALLIUM_DRIVER=zink` 和默认 `MVK_CONFIG_LOG_LEVEL=1`。`shader_cache_init` 附近的缓存逻辑接受 `MESA_SHADER_CACHE_DIR`、`MESA_SHADER_CACHE_MAX_SIZE` 和 `MADEIRA_GL_SHADER_CACHE`。组件构建见 `build/mesa-ios/build.sh` 与 `build/moltenvk-ios/build.sh`。 |
++| 渲染 | `ContentView.sessionBody` 包含 `MadeiraMetalView`。`MetalBackedView` 对接 `MetalHostView` 的 `CAMetalLayer`。`app/Madeira/Winios/WiniosGL.m` 的 `madeira_zink_target_bind/present` 用 IOSurface 接收 OSMesa 输出，再交给 Metal。 |
++| 输入 | `MetalBackedView.mapPoint` 与 `GuestDisplay.swift` 的 `GameSurfaceLayout` 共享显示几何。`app/Madeira/Winios/Winios.h` 提供 `winios_post_touch_down/move/up`、`winios_pointer` 和 `winios_post_key`。`winios_pointer` 接收 Wine 像素坐标和 `MOUSEEVENTF_*`；相对鼠标移动使用 `MOVE` 且省略 `ABSOLUTE`。 |
++| 覆盖层 | `TouchControlsHost` 在单独的 `UIWindow` 上承载 `TouchControlsOverlay` 和 `LibraryHUD`。`app/Madeira/FPSOverlay.swift` 的 `FPSOverlay` 使用已有采样器。 |
++| 构建 | `app/Madeira.xcodeproj` 的 Madeira scheme。FEX 和 LLVM 通过 CMake/Ninja 构建，Wine 用 configure/make，Mesa 用 Meson/Ninja。入口 `tools/build-ipa.sh`，组件清单 `tools/build/runtime-components.json`，打包 `tools/build/package-ipa.sh`。上游 workflow 使用 `xcode-27`；`build/ntdll-unix` 用到 iOS 27 SDK 字段。 |
++
++代码提供桌面 3.3 Core 探测。暗黑地牢的实际上下文版本、3D 纹理及场景帧率须从真机日志或渲染测试确认。`MESA_GL_VERSION_OVERRIDE` 仅改变版本报告。上游记录过 Release 游戏崩溃，Release 构建成功只确认编译与包结构。
+diff --git a/app/Madeira.xcodeproj/project.pbxproj b/app/Madeira.xcodeproj/project.pbxproj
+index cf86a5a..9553eb0 100644
+--- a/app/Madeira.xcodeproj/project.pbxproj
++++ b/app/Madeira.xcodeproj/project.pbxproj
+@@ -99,6 +99,8 @@
+ 		A1000519 /* SwiftSteam/Helpers/SteamLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000519 /* SteamLog.swift */; };
+ 		A1000001 /* MadeiraApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* MadeiraApp.swift */; };
+ 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
++		DD0000000000000000000011 /* DarkestPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000021 /* DarkestPort.swift */; };
++		DD0000000000000000000012 /* DarkestHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000022 /* DarkestHUD.swift */; };
+ 		A1000003 /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* LogStore.swift */; };
+ 		A1000077 /* MadeiraConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000077 /* MadeiraConfig.swift */; };
+ 		A1000004 /* JITAllocator.c in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* JITAllocator.c */; };
+@@ -382,6 +384,8 @@
+ 		A2000519 /* SteamLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SwiftSteam/Helpers/SteamLog.swift"; sourceTree = "<group>"; };
+ 		A2000001 /* MadeiraApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraApp.swift; sourceTree = "<group>"; };
+ 		A2000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
++		DD0000000000000000000021 /* DarkestPort.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DarkestPort.swift; sourceTree = "<group>"; };
++		DD0000000000000000000022 /* DarkestHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DarkestHUD.swift; sourceTree = "<group>"; };
+ 		A2000003 /* LogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
+ 		A2000077 /* MadeiraConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MadeiraConfig.swift; sourceTree = "<group>"; };
+ 		A2000004 /* JITAllocator.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = JITAllocator.c; sourceTree = "<group>"; };
+@@ -719,6 +723,8 @@
+ 				A2000260 /* PadKeyboardMouse.swift */,
+ 				A2000F51 /* PadAssist.swift */,
+ 				A2000002 /* ContentView.swift */,
++				DD0000000000000000000021 /* DarkestPort.swift */,
++				DD0000000000000000000022 /* DarkestHUD.swift */,
+ 				A2000003 /* LogStore.swift */,
+ 				A2000077 /* MadeiraConfig.swift */,
+ 				A2000200 /* LogPattern.swift */,
+@@ -1184,6 +1190,8 @@
+ 				A1000260 /* PadKeyboardMouse.swift in Sources */,
+ 				A1000F51 /* PadAssist.swift in Sources */,
+ 				A1000002 /* ContentView.swift in Sources */,
++				DD0000000000000000000011 /* DarkestPort.swift in Sources */,
++				DD0000000000000000000012 /* DarkestHUD.swift in Sources */,
+ 				A1000003 /* LogStore.swift in Sources */,
+ 				A1000077 /* MadeiraConfig.swift in Sources */,
+ 				A1000200 /* LogPattern.swift in Sources */,
+@@ -1305,7 +1313,7 @@
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+-				MADEIRA_BUNDLE_IDENTIFIER = com.willfaust.madeora;
++				MADEIRA_BUNDLE_IDENTIFIER = com.aai.darkest.madeira;
+ 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+ 				MTL_FAST_MATH = YES;
+ 				ONLY_ACTIVE_ARCH = YES;
+@@ -1334,7 +1342,7 @@
+ 				GCC_WARN_UNUSED_FUNCTION = YES;
+ 				GCC_WARN_UNUSED_VARIABLE = YES;
+ 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+-				MADEIRA_BUNDLE_IDENTIFIER = com.willfaust.madeora;
++				MADEIRA_BUNDLE_IDENTIFIER = com.aai.darkest.madeira;
+ 				MTL_ENABLE_DEBUG_INFO = NO;
+ 				MTL_FAST_MATH = YES;
+ 				SDKROOT = iphoneos;
+diff --git a/app/Madeira/ContentView.swift b/app/Madeira/ContentView.swift
+index 0c85315..97b2222 100644
+--- a/app/Madeira/ContentView.swift
++++ b/app/Madeira/ContentView.swift
+@@ -382,7 +382,27 @@ final class MetalBackedView: UIView {
+     private static let tmSlop: CGFloat = 10
+     private let F_MDOWN: UInt32 = 0x20, F_MUP: UInt32 = 0x40
+ 
+-    private var touchPointerMode: Bool { InputSettings.shared.touchMode }
++    private var darkestTouch: Bool { DarkestPort.uses(LibraryModel.shared.current) }
++    private var touchPointerMode: Bool {
++        darkestTouch ? DarkestHUDModel.shared.config.direct : InputSettings.shared.touchMode
++    }
++    private var trackpadRouting: Bool { desktopMode || (darkestTouch && !touchPointerMode) }
++    private var relativeTrackpad: Bool { !darkestTouch && InputSettings.shared.relative }
++
++    static func resetDarkestTouchMode() {
++        guard let view = keyboardTarget else { return }
++        if let finger = view.tmDragTouch {
++            let (x, y) = view.mapTouch(finger)
++            view.postSurfaceTouchUp(x, y)
++        }
++        if view.dragActive { view.postPointer(view.F_LUP) }
++        view.tmResetGesture()
++        view.touchGeneration += 1
++        view.touchStartTime = 0
++        view.dragActive = false
++        view.dragTouch = nil
++        view.twoFingerActive = false
++    }
+ 
+     private func tmResetGesture() {
+         tmDownPoints.removeAll()
+@@ -423,19 +443,29 @@ final class MetalBackedView: UIView {
+     private func touchModeBegan(_ touches: Set<UITouch>) {
+         guard !tmResolved else { return }   // a finger joining mid-drag changes nothing
+         for t in touches where tmDownPoints[ObjectIdentifier(t)] == nil {
+-            tmDownPoints[ObjectIdentifier(t)] = t.location(in: self)
++            let point = t.location(in: self)
++            if !darkestTouch || gameRect().contains(point) {
++                tmDownPoints[ObjectIdentifier(t)] = point
++            }
+         }
+         tmPeak = max(tmPeak, tmDownPoints.count)
+-        if tmDownPoints.count == 1, let t = touches.first {
++        if tmDownPoints.count == 1, let t = touches.first(where: { tmDownPoints[ObjectIdentifier($0)] != nil }) {
+             tmGestureDownPoint = t.location(in: self)
+             let (x, y) = mapPoint(tmGestureDownPoint)
+             winios_cursor_move(x, y)
+             tmGeneration += 1
+             let gen = tmGeneration
+-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.tmHoldDelay) { [weak self, weak t] in
++            let hold = darkestTouch ? min(1.2, max(0.25, DarkestHUDModel.shared.config.longPress)) : Self.tmHoldDelay
++            DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self, weak t] in
+                 guard let self, let t, self.tmGeneration == gen, !self.tmResolved,
+                       self.tmDownPoints.count == 1 else { return }
+-                self.tmCommitDrag(t)
++                if self.darkestTouch {
++                    self.tmResolved = true
++                    self.tmAbsoluteClick(down: self.F_RDOWN, up: self.F_RUP, at: self.tmGestureDownPoint)
++                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
++                } else {
++                    self.tmCommitDrag(t)
++                }
+             }
+         } else {
+             // A second or third finger: only a multi-finger tap is possible now.
+@@ -488,13 +518,17 @@ final class MetalBackedView: UIView {
+             tmResetGesture()
+             return
+         }
+-        guard !tmResolved else { return }
++        if tmResolved {
++            if activeTouches(event).isEmpty { tmResetGesture() }
++            return
++        }
+         guard activeTouches(event).isEmpty else { return }   // wait for every finger
+         let peak = tmPeak, mid = tmMidpoint(), brokeSlop = tmSlopBroken
+         tmResetGesture()
+         guard !brokeSlop else { return }
+         switch peak {
+         case 1:
++            if darkestTouch { DarkestHUDModel.shared.gameplayTap() }
+             let (x, y) = mapPoint(mid)
+             postSurfaceTouchDown(x, y)
+             postSurfaceTouchUp(x, y)
+@@ -511,7 +545,7 @@ final class MetalBackedView: UIView {
+             tmResetGesture()
+             return
+         }
+-        if !tmResolved { tmResetGesture() }
++        if !tmResolved || tmDragTouch == nil { tmResetGesture() }
+     }
+ 
+     // ==================================================================
+@@ -602,7 +636,8 @@ final class MetalBackedView: UIView {
+         return CGPoint(x: x / n, y: y / n)
+     }
+     private func activeTouches(_ event: UIEvent?) -> [UITouch] {
+-        (event?.allTouches ?? []).filter { $0.phase != .ended && $0.phase != .cancelled }
++        (event?.allTouches ?? []).filter { $0.phase != .ended && $0.phase != .cancelled &&
++            (!darkestTouch || $0.view === self) }
+     }
+ 
+     // Direct touches that began while TouchMouseGate was suppressing stay
+@@ -633,7 +668,7 @@ final class MetalBackedView: UIView {
+         if HardwareInput.shared.interceptTouches(touches, event, .began) { return }
+         guard let touches = tmgFilter(touches, .began) else { return }
+         if touchPointerMode { touchModeBegan(touches); return }
+-        guard desktopMode else {
++        guard trackpadRouting else {
+             guard let t = touches.first else { return }
+             let (x, y) = mapTouch(t)
+             postSurfaceTouchDown(x, y)
+@@ -667,7 +702,7 @@ final class MetalBackedView: UIView {
+                   !self.movedBeyondSlop, !self.twoFingerActive,
+                   // ml643: in mouse-look the finger is the CAMERA, not a pointer.
+                   // Holding still to line up a shot must not press the mouse.
+-                  !InputSettings.shared.relative else { return }
++                  !self.relativeTrackpad else { return }
+             self.dragActive = true
+             self.dragTouch = t
+             self.postPointer(self.F_LDOWN)
+@@ -680,7 +715,7 @@ final class MetalBackedView: UIView {
+         if HardwareInput.shared.interceptTouches(touches, event, .moved) { return }
+         guard let touches = tmgFilter(touches, .moved) else { return }
+         if touchPointerMode { touchModeMoved(touches, event); return }
+-        guard desktopMode else {
++        guard trackpadRouting else {
+             guard let t = touches.first else { return }
+             let (x, y) = mapTouch(t)
+             postSurfaceTouchMove(x, y)
+@@ -735,7 +770,7 @@ final class MetalBackedView: UIView {
+          * slides left, so a target to the RIGHT of the crosshair is pulled onto it
+          * by dragging RIGHT. That is the same sign as a mouse. Negate both terms
+          * for content-drag (finger-follows-world) feel. */
+-        if InputSettings.shared.relative {
++        if relativeTrackpad {
+             let sens = CGFloat(InputSettings.shared.sensRel)
+             relCarryX += dx * sens
+             relCarryY += dy * sens
+@@ -762,7 +797,7 @@ final class MetalBackedView: UIView {
+         if HardwareInput.shared.interceptTouches(touches, event, .ended) { return }
+         guard let touches = tmgFilter(touches, .ended) else { return }
+         if touchPointerMode { touchModeEnded(touches, event); return }
+-        guard desktopMode else {
++        guard trackpadRouting else {
+             guard let t = touches.first else { return }
+             let (x, y) = mapTouch(t)
+             postSurfaceTouchUp(x, y)
+@@ -772,7 +807,7 @@ final class MetalBackedView: UIView {
+         if twoFingerActive {
+             if activeTouches(event).isEmpty {
+                 if !twoFingerMoved && now - twoFingerStartTime < 0.40
+-                    && !InputSettings.shared.relative {   // ml643: see touchesBegan
++                    && !relativeTrackpad {   // ml643: see touchesBegan
+                     postPointer(F_RDOWN)
+                     postPointer(F_RUP)
+                 }
+@@ -795,7 +830,8 @@ final class MetalBackedView: UIView {
+         // stationary release before the 0.5s drag threshold = click.
+         // ml643: NOT in relative mode — every small aim adjustment would fire the
+         // weapon. Left/right click are on-screen buttons there instead.
+-        if !movedBeyondSlop && now - touchStartTime < 0.5 && !InputSettings.shared.relative {
++        if !movedBeyondSlop && now - touchStartTime < 0.5 && !relativeTrackpad {
++            if darkestTouch { DarkestHUDModel.shared.gameplayTap() }
+             fputs("[trackpad] ended: click\n", stderr)
+             postPointer(F_LDOWN)
+             postPointer(F_LUP)
+@@ -806,7 +842,7 @@ final class MetalBackedView: UIView {
+         if HardwareInput.shared.interceptTouches(touches, event, .cancelled) { return }
+         guard let touches = tmgFilter(touches, .cancelled) else { return }
+         if touchPointerMode { touchModeCancelled(touches); return }
+-        guard desktopMode else {
++        guard trackpadRouting else {
+             guard let t = touches.first else { return }
+             let (x, y) = mapTouch(t)
+             postSurfaceTouchUp(x, y)
+@@ -1320,18 +1356,19 @@ struct ContentView: View {
+          * two-column selection behaviour. */
+         NavigationStack {
+             Group {
+-                if library.enabled && library.current != nil {
++                if library.current != nil {
+                     sessionBody
+                         .navigationBarHidden(true)
+-                } else if library.enabled {
+-                    LibraryView(play: launchLibraryEntry, enableJIT: enableJIT,
+-                                startDock: { startDock($0, compactPool: $1) })
+                 } else {
+-                    developerBody
++                    DarkestLaunchView(play: launchDarkest, enableJIT: enableJIT)
+                 }
+             }
+-            .navigationTitle("Madeira")
++            .navigationTitle("暗黑地牢")
+             .navigationBarTitleDisplayMode(.inline)
++            .alert("暗黑地牢", isPresented: Binding(get: { library.error != nil },
++                                                      set: { if !$0 { library.error = nil } })) {
++                Button("好") { library.error = nil }
++            } message: { Text(library.error ?? "") }
+             .toolbarBackground(.regularMaterial, for: .navigationBar)
+             // The library keeps a material bar only before iOS 26. From iOS 26 the
+             // system draws its soft scroll edge effect instead: content scrolls
+@@ -2564,6 +2601,17 @@ struct ContentView: View {
+     /// Play in the library (Library.swift): checks that a session can start,
+     /// applies the entry's launch profile and runs the same full sequence as the
+     /// developer interface's buttons.
++    private func launchDarkest(_ executable: URL, _ arguments: String) {
++        guard library.current == nil, wine_process_is_running() == 0 else { return }
++        do {
++            var entry = try DarkestPort.prepare(executable: executable)
++            entry.arguments = arguments
++            launchLibraryEntry(entry)
++        } catch {
++            library.error = error.localizedDescription
++        }
++    }
++
+     private func launchLibraryEntry(_ entry: LibraryEntry) {
+         // madeira-bcd: a game seen for the first time starts with Madeira's recommended
+         // settings (GameRecommendationsApply.swift).
+@@ -2672,6 +2720,10 @@ struct ContentView: View {
+             GOGGalaxy.shared.stop()
+             library.error = "The executable path or launch arguments are too long."; return
+         }
++        if DarkestPort.uses(entry) {
++            do { try DarkestPort.configureGraphics() }
++            catch { library.error = error.localizedDescription; return }
++        }
+         entry.configureLaunch()
+         // madeira-bcd: the game's own options (LibraryBCD.swift).
+         BCDLaunch.applyLibrary(entry)
+@@ -2680,7 +2732,7 @@ struct ContentView: View {
+         // through Madeira Dock above gets its own from ntdll, once Valve's client starts it.
+         let program = entry.desktop == true ? "explorer.exe"
+             : entry.launchWindowsPath.split(separator: "\\").last.map(String.init) ?? entry.launchWindowsPath
+-        LogStore.shared.startSessionLog(program: program)
++        LogStore.shared.startSessionLog(program: program, directory: DarkestPort.uses(entry) ? DarkestPort.logs : nil)
+         library.begin(entry)
+         runWineFullSequence(profile: entry)
+     }
+@@ -4229,6 +4281,13 @@ final class TouchControlsModel: ObservableObject {
+ /// the game underneath — mouse-look must keep working between the buttons.
+ final class ControlsWindow: UIWindow {
+     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
++        let library = LibraryModel.shared
++        if DarkestPort.uses(library.current) {
++            if library.blocksGameplayTouch || DarkestHUDModel.shared.hits(point, in: bounds) {
++                return super.hitTest(point, with: event)
++            }
++            return nil
++        }
+         let m = TouchControlsModel.shared
+         // Edit mode owns the whole screen: drags and the scale pinch must not
+         // leak through and swing the camera while you are arranging buttons.
+@@ -4242,7 +4301,6 @@ final class ControlsWindow: UIWindow {
+         // A library session (Library.swift), in either orientation: its in-game
+         // menu and starting screen take every touch; otherwise only its menu
+         // button, its performance overlay and the touch controls do.
+-        let library = LibraryModel.shared
+         // A Play getting ready: its starting screen takes every touch.
+         if library.preparing != nil { return super.hitTest(point, with: event) }
+         // The library itself, between sessions (a start that did not happen): nothing here.
+@@ -4309,7 +4367,10 @@ struct TouchControlsOverlay: View {
+             ZStack(alignment: .top) {
+                 // The library between sessions (the window came up for a start that did not
+                 // happen) draws nothing over the library's own screens.
+-                if landscape && !(library.enabled && !session && !m.editing) {
++                if DarkestPort.uses(library.current) {
++                    if library.blocksGameplayTouch { LibraryHUD() }
++                    else { DarkestHUD() }
++                } else if landscape && !(library.enabled && !session && !m.editing) {
+                     if m.editing {
+                         Color.clear.contentShape(editorCanvas(geo.size))
+                             .onTapGesture { m.selected = nil; zones.selected = nil }
+diff --git a/app/Madeira/DarkestHUD.swift b/app/Madeira/DarkestHUD.swift
+new file mode 100644
+index 0000000..3af764a
+--- /dev/null
++++ b/app/Madeira/DarkestHUD.swift
+@@ -0,0 +1,338 @@
++import SwiftUI
++import UIKit
++
++enum DarkestKey: String, CaseIterable {
++    case left, right, door, shift, torch, map, pause
++
++    var label: String {
++        switch self {
++        case .left: return "A"
++        case .right: return "D"
++        case .door: return "W"
++        case .shift: return "Shift"
++        case .torch: return "T"
++        case .map: return "Tab"
++        case .pause: return "Esc"
++        }
++    }
++
++    var vk: Int32 {
++        switch self {
++        case .left: return 0x41
++        case .right: return 0x44
++        case .door: return 0x57
++        case .shift: return 0x10
++        case .torch: return 0x54
++        case .map: return 0x09
++        case .pause: return 0x1b
++        }
++    }
++}
++
++struct DarkestKeyPlacement: Codable {
++    var x: Double
++    var y: Double
++    var size = 1.0
++    var opacity = 1.0
++    var enabled = true
++}
++
++struct DarkestHUDConfig: Codable {
++    var direct = true
++    var autoHide = false
++    var monitor = false
++    var size = 1.0
++    var opacity = 0.76
++    var longPress = 0.50
++    var keys = [
++        "left": DarkestKeyPlacement(x: 0.09, y: 0.83),
++        "right": DarkestKeyPlacement(x: 0.22, y: 0.83),
++        "door": DarkestKeyPlacement(x: 0.155, y: 0.66),
++        "shift": DarkestKeyPlacement(x: 0.78, y: 0.84),
++        "torch": DarkestKeyPlacement(x: 0.91, y: 0.84),
++        "map": DarkestKeyPlacement(x: 0.91, y: 0.65),
++        "pause": DarkestKeyPlacement(x: 0.91, y: 0.22),
++    ]
++}
++
++final class DarkestHUDModel: ObservableObject {
++    static let shared = DarkestHUDModel()
++    @Published var config: DarkestHUDConfig
++    @Published var settings = false
++    @Published var editing = false
++    @Published var gearVisible = true
++    @Published private(set) var held: Set<DarkestKey> = []
++    private var gearTimer: DispatchWorkItem?
++
++    private var configURL: URL { DarkestPort.root.appendingPathComponent("hud_config.json") }
++
++    private init() {
++        let url = DarkestPort.root.appendingPathComponent("hud_config.json")
++        let data = try? Data(contentsOf: url)
++        config = data.flatMap { try? JSONDecoder().decode(DarkestHUDConfig.self, from: $0) } ?? DarkestHUDConfig()
++    }
++
++    func save() {
++        do {
++            try DarkestPort.makeFolders()
++            try JSONEncoder().encode(config).write(to: configURL, options: .atomic)
++        } catch { LogStore.shared.log("[dd-hud] \(error.localizedDescription)", level: .error) }
++    }
++
++    func placement(_ key: DarkestKey) -> DarkestKeyPlacement {
++        config.keys[key.rawValue] ?? DarkestHUDConfig().keys[key.rawValue]!
++    }
++
++    func assign(_ key: DarkestKey, _ value: DarkestKeyPlacement) {
++        config.keys[key.rawValue] = value
++    }
++
++    func keyRect(_ key: DarkestKey, in bounds: CGRect) -> CGRect {
++        let p = placement(key)
++        let size = CGFloat(50 * min(1.5, max(0.65, config.size)) * min(1.5, max(0.65, p.size)))
++        let x = min(bounds.maxX - size / 2, max(bounds.minX + size / 2, bounds.minX + CGFloat(p.x) * bounds.width))
++        let y = min(bounds.maxY - size / 2, max(bounds.minY + size / 2, bounds.minY + CGFloat(p.y) * bounds.height))
++        return CGRect(x: x - size / 2, y: y - size / 2, width: size, height: size)
++    }
++
++    func gearRect(in bounds: CGRect) -> CGRect {
++        CGRect(x: bounds.maxX - 54, y: bounds.midY - 22, width: 44, height: 44)
++    }
++
++    func modeRect(in bounds: CGRect) -> CGRect {
++        CGRect(x: bounds.midX - 68, y: bounds.minY + 13, width: 136, height: 40)
++    }
++
++    func hits(_ p: CGPoint, in bounds: CGRect) -> Bool {
++        if settings || editing { return true }
++        if (!config.autoHide || gearVisible) && gearRect(in: bounds).contains(p) { return true }
++        if modeRect(in: bounds).contains(p) { return true }
++        return DarkestKey.allCases.contains { placement($0).enabled && keyRect($0, in: bounds).contains(p) }
++    }
++
++    func gameplayTap() {
++        guard config.autoHide, !settings, !editing else { return }
++        gearTimer?.cancel()
++        gearVisible = true
++        let expire = DispatchWorkItem { [weak self] in
++            guard let self, !self.editing, !self.settings else { return }
++            self.gearVisible = false
++        }
++        gearTimer = expire
++        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: expire)
++    }
++
++    func press(_ key: DarkestKey) {
++        guard !editing, !settings, placement(key).enabled else { return }
++        UIImpactFeedbackGenerator(style: .light).impactOccurred()
++        if key == .shift, held.contains(key) { release(key); return }
++        guard held.insert(key).inserted else { return }
++        winios_post_key(key.vk, 1)
++    }
++
++    func release(_ key: DarkestKey) {
++        guard held.remove(key) != nil else { return }
++        winios_post_key(key.vk, 0)
++    }
++
++    func releaseAll() {
++        for key in held { winios_post_key(key.vk, 0) }
++        held.removeAll()
++    }
++
++    func reset() {
++        releaseAll()
++        config = DarkestHUDConfig()
++        save()
++    }
++}
++
++/// A touch belongs to this single button until release or cancellation.
++/// UIKit can concurrently route other fingers to the game view below.
++private struct DarkestKeySurface: UIViewRepresentable {
++    let key: DarkestKey
++    let model: DarkestHUDModel
++
++    final class Surface: UIView {
++        var key: DarkestKey = .left
++        weak var model: DarkestHUDModel?
++        private var down = false
++
++        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
++            guard !down else { return }
++            down = true
++            model?.press(key)
++        }
++        private func end() {
++            guard down else { return }
++            down = false
++            if key != .shift { model?.release(key) }
++        }
++        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { end() }
++        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { end() }
++        override func didMoveToWindow() { if window == nil { end() } }
++    }
++    func makeUIView(context: Context) -> Surface {
++        let view = Surface()
++        view.key = key
++        view.model = model
++        view.isMultipleTouchEnabled = false
++        view.isAccessibilityElement = true
++        view.accessibilityLabel = key.label
++        view.accessibilityTraits = .button
++        return view
++    }
++    func updateUIView(_ uiView: Surface, context: Context) {}
++}
++
++struct DarkestHUD: View {
++    @ObservedObject private var hud = DarkestHUDModel.shared
++    @ObservedObject private var library = LibraryModel.shared
++    @State private var selected = DarkestKey.left
++    private let iron = Color(red: 0.16, green: 0.13, blue: 0.12)
++    private let parchment = Color(red: 0.86, green: 0.76, blue: 0.56)
++
++    var body: some View {
++        GeometryReader { geo in
++            let bounds = CGRect(origin: .zero, size: geo.size)
++            ZStack {
++                ForEach(DarkestKey.allCases, id: \.self) { key in
++                    if hud.placement(key).enabled || hud.editing { control(key, bounds: bounds) }
++                }
++                if !hud.editing {
++                    Button(hud.config.direct ? "直触模式" : "精准虚拟光标") {
++                        MetalBackedView.resetDarkestTouchMode()
++                        hud.config.direct.toggle()
++                        hud.save()
++                        hud.gameplayTap()
++                    }
++                    .buttonStyle(.plain)
++                    .frame(width: 136, height: 40)
++                    .background(iron.opacity(0.85), in: Capsule())
++                    .position(x: hud.modeRect(in: bounds).midX, y: hud.modeRect(in: bounds).midY)
++
++                    if !hud.config.autoHide || hud.gearVisible {
++                        Button {
++                            hud.releaseAll()
++                            hud.settings = true
++                        } label: {
++                            Image(systemName: "gearshape.fill").frame(width: 44, height: 44)
++                        }
++                        .accessibilityLabel("触控设置")
++                        .buttonStyle(.plain)
++                        .background(iron, in: RoundedRectangle(cornerRadius: 7))
++                        .position(x: hud.gearRect(in: bounds).midX, y: hud.gearRect(in: bounds).midY)
++                    }
++                } else {
++                    Button("保存布局") { hud.editing = false; hud.save(); hud.settings = true }
++                        .buttonStyle(.borderedProminent)
++                        .position(x: bounds.midX, y: 34)
++                }
++                if hud.config.monitor && !hud.settings && !hud.editing {
++                    DarkestMeter().position(x: bounds.midX, y: 74).allowsHitTesting(false)
++                }
++                if hud.settings {
++                    settings.frame(width: min(bounds.width - 28, 365), height: min(bounds.height - 30, 520))
++                        .background(iron, in: RoundedRectangle(cornerRadius: 10))
++                }
++            }
++            .foregroundStyle(parchment)
++            .coordinateSpace(name: "darkest-hud")
++        }
++        .ignoresSafeArea()
++        .onAppear { hud.gameplayTap() }
++        .onDisappear { hud.releaseAll(); hud.settings = false; hud.editing = false }
++        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
++            hud.releaseAll()
++        }
++    }
++
++    private func control(_ key: DarkestKey, bounds: CGRect) -> some View {
++        let frame = hud.keyRect(key, in: bounds)
++        let selected = hud.held.contains(key)
++        return ZStack {
++            RoundedRectangle(cornerRadius: 8).fill(selected ? .red.opacity(0.85) : iron)
++            RoundedRectangle(cornerRadius: 8).strokeBorder(parchment.opacity(0.54), lineWidth: 1)
++            Text(key.label).font(.system(.body, design: .serif).weight(.bold))
++            if !hud.editing { DarkestKeySurface(key: key, model: hud) }
++        }
++        .frame(width: frame.width, height: frame.height)
++        .opacity(hud.editing ? 0.95 : max(0.15, min(1, hud.config.opacity * hud.placement(key).opacity)))
++        .position(x: frame.midX, y: frame.midY)
++        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("darkest-hud"))
++            .onChanged { value in
++                var p = hud.placement(key)
++                p.x = max(0, min(1, Double(value.location.x / bounds.width)))
++                p.y = max(0, min(1, Double(value.location.y / bounds.height)))
++                hud.assign(key, p)
++            }, including: hud.editing ? .all : .none)
++    }
++
++    private func binding<T>(_ path: WritableKeyPath<DarkestHUDConfig, T>) -> Binding<T> {
++        Binding(get: { hud.config[keyPath: path] }, set: { value in
++            hud.config[keyPath: path] = value
++            hud.save()
++        })
++    }
++
++    private func keyBinding<T>(_ path: WritableKeyPath<DarkestKeyPlacement, T>) -> Binding<T> {
++        Binding(get: { hud.placement(selected)[keyPath: path] }, set: { value in
++            var p = hud.placement(selected)
++            p[keyPath: path] = value
++            hud.assign(selected, p)
++            hud.save()
++        })
++    }
++
++    private var settings: some View {
++        Form {
++            Button("返回游戏") { hud.settings = false; hud.gameplayTap() }
++            Button("拖动按键") { hud.settings = false; hud.editing = true }
++            Toggle("设置键自动隐藏", isOn: binding(\.autoHide))
++            Toggle("显示 FPS / 内存 / CPU", isOn: binding(\.monitor))
++            VStack { Text("长按右键时间"); Slider(value: binding(\.longPress), in: 0.25...1.2, step: 0.05) }
++            VStack { Text("整体大小"); Slider(value: binding(\.size), in: 0.65...1.5) }
++            VStack { Text("整体透明度"); Slider(value: binding(\.opacity), in: 0.15...1.0) }
++            Picker("编辑按键", selection: $selected) {
++                ForEach(DarkestKey.allCases, id: \.self) { Text($0.label).tag($0) }
++            }
++            Toggle("启用按键", isOn: keyBinding(\.enabled))
++            VStack { Text("按键大小"); Slider(value: keyBinding(\.size), in: 0.65...1.5) }
++            VStack { Text("按键透明度"); Slider(value: keyBinding(\.opacity), in: 0.15...1.0) }
++            Button("恢复默认布局") { hud.reset() }
++            Button("会话菜单") { hud.settings = false; library.menu = true }
++        }
++        .scrollContentBackground(.hidden)
++        .environment(\.colorScheme, .dark)
++    }
++}
++
++private struct DarkestMeter: View {
++    @State private var previousFrames = madeira_frame_count()
++    @State private var previousTime = ProcessInfo.processInfo.systemUptime
++    @State private var text = "FPS —   内存 —   CPU —"
++    @State private var cpu = CPUMeter()
++    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
++
++    var body: some View {
++        Text(text).monospacedDigit().font(.caption)
++            .padding(6).background(.black.opacity(0.75), in: Capsule())
++            .onReceive(timer) { _ in
++                let frames = madeira_frame_count()
++                let time = ProcessInfo.processInfo.systemUptime
++                let rate = frames >= previousFrames ? Double(frames - previousFrames) / max(0.001, time - previousTime) : 0
++                previousFrames = frames
++                previousTime = time
++                var info = task_vm_info_data_t()
++                var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
++                let status = withUnsafeMutablePointer(to: &info) { ptr in
++                    ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
++                        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
++                    }
++                }
++                let memory = status == KERN_SUCCESS ? "\(info.phys_footprint / (1024 * 1024)) MB" : "—"
++                let usage = cpu.sample().map { String(format: "%.0f%%", $0.total) } ?? "—"
++                text = String(format: "%.0f FPS", rate) + "   内存 " + memory + "   CPU " + usage
++            }
++    }
++}
+diff --git a/app/Madeira/DarkestPort.swift b/app/Madeira/DarkestPort.swift
+new file mode 100644
+index 0000000..cbb93bf
+--- /dev/null
++++ b/app/Madeira/DarkestPort.swift
+@@ -0,0 +1,276 @@
++import Foundation
++import SwiftUI
++import UIKit
++import UniformTypeIdentifiers
++
++enum DarkestPort {
++    static var documents: URL {
++        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
++    }
++    static var root: URL { documents.appendingPathComponent("DarkestDungeon", isDirectory: true) }
++    static var game: URL { root.appendingPathComponent("game", isDirectory: true) }
++    static var mods: URL { root.appendingPathComponent("mods", isDirectory: true) }
++    static var saves: URL { root.appendingPathComponent("saves", isDirectory: true) }
++    static var logs: URL { root.appendingPathComponent("logs", isDirectory: true) }
++    static let driveName = "DarkestDungeon"
++    private static let candidates = [
++        "_windowsnosteam/win64/Darkest.exe", "_windows/win64/Darkest.exe",
++    ]
++
++    struct Failure: LocalizedError {
++        let errorDescription: String?
++        init(_ message: String) { errorDescription = message }
++    }
++
++    static func makeFolders() throws {
++        let fm = FileManager.default
++        for folder in [root, game, mods, saves, logs] {
++            guard (try? fm.destinationOfSymbolicLink(atPath: folder.path)) == nil else {
++                throw Failure("请将 \(folder.lastPathComponent) 恢复为普通目录后重试。")
++            }
++            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
++        }
++    }
++
++    static func relativeGamePath(_ url: URL) -> String? {
++        let prefix = game.resolvingSymlinksInPath().standardizedFileURL.path + "/"
++        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
++        guard path.hasPrefix(prefix) else { return nil }
++        return String(path.dropFirst(prefix.count))
++    }
++
++    /// Check the actual casing first, then find a unique case-insensitive
++    /// match (Files may receive a PC folder with differently cased names).
++    static func findExecutable() -> URL? {
++        let fm = FileManager.default
++        for candidate in candidates {
++            var directory = game
++            var found = true
++            for part in candidate.split(separator: "/").map(String.init) {
++                let exact = directory.appendingPathComponent(part)
++                if fm.fileExists(atPath: exact.path) {
++                    directory = exact
++                } else {
++                    let matches = (try? fm.contentsOfDirectory(atPath: directory.path))?
++                        .filter { $0.caseInsensitiveCompare(part) == .orderedSame } ?? []
++                    guard matches.count == 1 else { found = false; break }
++                    directory.appendPathComponent(matches[0])
++                }
++            }
++            if found && relativeGamePath(directory) != nil &&
++                (try? directory.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
++                return directory
++            }
++        }
++        return nil
++    }
++
++    /// Relative symlinks survive a container UUID change. When a PC copy or a
++    /// previous Wine profile already has data here, keep the original and
++    /// copy its missing children into the new location before installing the
++    /// link. Conflicting filenames remain available in the recovery folder.
++    private static func mount(_ link: URL, to target: URL, migrate: Bool) throws {
++        let fm = FileManager.default
++        let parent = link.deletingLastPathComponent()
++        let sandbox = documents.resolvingSymlinksInPath()
++        let parentPath = parent.resolvingSymlinksInPath().path
++        let targetPath = target.resolvingSymlinksInPath().path
++        guard parentPath.hasPrefix(sandbox.path + "/"), targetPath.hasPrefix(sandbox.path + "/") else {
++            throw Failure("挂载路径超出了应用的文件目录。")
++        }
++        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
++        let oldLink = try? fm.destinationOfSymbolicLink(atPath: link.path)
++        if oldLink != nil && link.resolvingSymlinksInPath().path == targetPath { return }
++        var backup: URL?
++        if oldLink != nil || fm.fileExists(atPath: link.path) {
++            guard migrate else { throw Failure("Wine 映射路径已被占用：\(link.lastPathComponent)。") }
++            let recovery = root.appendingPathComponent("recovery", isDirectory: true)
++            try fm.createDirectory(at: recovery, withIntermediateDirectories: true)
++            guard recovery.resolvingSymlinksInPath().path.hasPrefix(sandbox.path + "/") else {
++                throw Failure("恢复目录超出了应用的文件目录。")
++            }
++            let copy = recovery.appendingPathComponent(link.lastPathComponent + "-" + UUID().uuidString)
++            if oldLink == nil {
++                for item in try fm.contentsOfDirectory(at: link, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
++                    let dest = target.appendingPathComponent(item.lastPathComponent)
++                    if try item.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
++                       !fm.fileExists(atPath: dest.path),
++                       (try? fm.destinationOfSymbolicLink(atPath: dest.path)) == nil {
++                        try fm.copyItem(at: item, to: dest)
++                    }
++                }
++            }
++            try fm.moveItem(at: link, to: copy)
++            backup = copy
++        }
++        let from = parent.resolvingSymlinksInPath().pathComponents
++        let to = target.resolvingSymlinksInPath().pathComponents
++        let shared = zip(from, to).prefix(while: { $0.0 == $0.1 }).count
++        let relative = (Array(repeating: "..", count: from.count - shared) + to.dropFirst(shared)).joined(separator: "/")
++        do {
++            try fm.createSymbolicLink(atPath: link.path, withDestinationPath: relative)
++        } catch {
++            if let backup { try? fm.moveItem(at: backup, to: link) }
++            throw error
++        }
++    }
++
++    static func prepare(executable: URL) throws -> LibraryEntry {
++        try makeFolders()
++        guard let relative = relativeGamePath(executable),
++              executable.pathExtension.lowercased() == "exe",
++              (try? executable.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
++            throw Failure("请选择游戏目录里的 Windows .exe 文件。")
++        }
++        let fm = FileManager.default
++        let prefix = documents.appendingPathComponent("wine", isDirectory: true)
++        madeira_seed_prefix_if_needed(prefix.path)
++        let drive = LibraryEntry.hostDrive
++        guard fm.fileExists(atPath: prefix.appendingPathComponent("system.reg").path) else {
++            throw Failure("Wine 首次初始化失败，请查看日志。")
++        }
++        try mount(drive.appendingPathComponent(driveName), to: game, migrate: false)
++        var entry = try LibraryModel.inspect(executable)
++        guard entry.relativePath == driveName + "/" + relative else {
++            throw Failure("Wine 的游戏目录映射不一致。")
++        }
++        try mount(game.appendingPathComponent("mods"), to: mods, migrate: true)
++        let users = drive.appendingPathComponent("users", isDirectory: true)
++        let unixUser = getpwuid(getuid()).map { String(cString: $0.pointee.pw_name) } ?? ""
++        let names = Set(["madeira", "mobile", unixUser, ProcessInfo.processInfo.environment["USER"] ?? ""])
++        for name in names.sorted() where !name.isEmpty && name != "." && name != ".." &&
++            !name.contains("/") && !name.contains("\\") {
++            let folder = users.appendingPathComponent(name).appendingPathComponent("Documents")
++            if (try? fm.destinationOfSymbolicLink(atPath: folder.path)) != nil,
++               !fm.fileExists(atPath: folder.path) {
++                // The upstream tarball used a dangling developer-machine link.
++                try fm.removeItem(at: folder)
++            }
++            try mount(folder.appendingPathComponent("Darkest"), to: saves, migrate: true)
++        }
++        // A Windows Steam copy may use userdata as soon as Steam has created
++        // its account directory. Keep each account in its own save folder.
++        for install in ["Program Files (x86)/Steam", "Program Files/Steam"] {
++            let data = drive.appendingPathComponent(install).appendingPathComponent("userdata")
++            for account in (try? fm.contentsOfDirectory(atPath: data.path)) ?? []
++                where !account.isEmpty && account.utf8.allSatisfy({ (48...57).contains($0) }) {
++                let base = data.appendingPathComponent(account).appendingPathComponent("262060")
++                let steam = saves.appendingPathComponent("steam").appendingPathComponent(account)
++                try fm.createDirectory(at: steam, withIntermediateDirectories: true)
++                try mount(base.appendingPathComponent("remote"), to: steam, migrate: true)
++            }
++        }
++        entry.title = "暗黑地牢"
++        entry.resolution = ResolutionChoices.defaultValue
++        entry.display = DisplayMode.fit.rawValue
++        entry.fpsMode = 1
++        return entry
++    }
++
++    static func uses(_ entry: LibraryEntry?) -> Bool {
++        entry?.relativePath.hasPrefix(driveName + "/") == true
++    }
++
++    static func configureGraphics() throws {
++        let fm = FileManager.default
++        let gl = Bundle.main.bundleURL.appendingPathComponent("gl")
++        guard ["libOSMesa.dylib", "libMoltenVK.dylib"].allSatisfy({
++            fm.fileExists(atPath: gl.appendingPathComponent($0).path)
++        }) else { throw Failure("本 IPA 缺少桌面 OpenGL 运行库，请使用含 Zink 和 MoltenVK 的构建。") }
++        let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
++            .appendingPathComponent("dd_shader_cache", isDirectory: true)
++        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
++        setenv("MADEIRA_GL_BACKEND", "zink", 1)
++        setenv("MADEIRA_GL_VULKAN", "moltenvk", 1)
++        setenv("MESA_SHADER_CACHE_DIR", cache.path, 1)
++        setenv("MESA_SHADER_CACHE_MAX_SIZE", "256M", 1)
++        setenv("MVK_CONFIG_LOG_LEVEL", "1", 1)
++        setenv("MADEIRA_GL_PERF", "0", 1)
++        setenv("MADEIRA_GL_FPS_CAP", "1", 1)
++        setenv("MADEIRA_DEBUG_VERBOSE", "0", 1)
++    }
++}
++
++struct DarkestLaunchView: View {
++    let play: (URL, String) -> Void
++    let enableJIT: () -> Void
++    @ObservedObject private var library = LibraryModel.shared
++    @AppStorage("ddExecutable") private var selected = ""
++    @AppStorage("ddArguments") private var arguments = ""
++    @State private var executable: URL?
++    @State private var showFiles = false
++    @State private var showJIT = false
++    @State private var showMemory = false
++
++    private func scan() {
++        do {
++            try DarkestPort.makeFolders()
++            if !selected.isEmpty {
++                let manual = DarkestPort.game.appendingPathComponent(selected)
++                if DarkestPort.relativeGamePath(manual) == selected &&
++                    FileManager.default.fileExists(atPath: manual.path) {
++                    executable = manual
++                    return
++                }
++            }
++            executable = DarkestPort.findExecutable()
++        } catch { library.error = error.localizedDescription }
++    }
++
++    var body: some View {
++        Form {
++            Section("游戏文件") {
++                if let executable, let path = DarkestPort.relativeGamePath(executable) {
++                    Text(path).font(.footnote.monospaced()).textSelection(.enabled)
++                } else {
++                    Text("打开「文件」→「我的 iPhone」→「暗黑地牢」→ DarkestDungeon → game。把 PC 游戏文件夹内的全部文件和子目录复制进 game，使 _windowsnosteam 或 _windows 直接位于 game 下。")
++                }
++                Button("重新扫描") { selected = ""; scan() }
++                Button("手动选择 .exe") { showFiles = true }
++            }
++            Section("启动") {
++                TextField("自定义命令行参数", text: $arguments)
++                    .textInputAutocapitalization(.never).autocorrectionDisabled()
++                Button("开始游戏") {
++                    guard let executable else { return }
++                    guard StikJITHelper.ready else { showJIT = true; return }
++                    guard EntitlementStatus.check().increasedMemory else { showMemory = true; return }
++                    play(executable, arguments)
++                }
++                .disabled(executable == nil)
++                Button("启用 JIT", action: enableJIT)
++                Text(EntitlementStatus.check().increasedMemory ? "Memory+ 已启用" : "Memory+ 未启用")
++                    .foregroundStyle(.secondary)
++            }
++            Section("Mod 与存档") {
++                Text("将每个解压后的 PC 数据 Mod 文件夹放进 DarkestDungeon/mods，结束当前会话后重新启动游戏。存档在 DarkestDungeon/saves，删除应用前请通过「文件」备份。")
++            }
++        }
++        .onAppear(perform: scan)
++        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in scan() }
++        .fileImporter(isPresented: $showFiles, allowedContentTypes: [UTType(filenameExtension: "exe") ?? .data]) { result in
++            do {
++                let url = try result.get()
++                let accessing = url.startAccessingSecurityScopedResource()
++                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
++                guard url.pathExtension.lowercased() == "exe", let path = DarkestPort.relativeGamePath(url) else {
++                    throw DarkestPort.Failure("请先把完整游戏复制到 DarkestDungeon/game，再在该目录中选择 .exe。")
++                }
++                selected = path
++                scan()
++            } catch { library.error = error.localizedDescription }
++        }
++        .alert("需要启用 JIT", isPresented: $showJIT) {
++            Button("打开 JIT 设置", action: enableJIT)
++            Button("返回", role: .cancel) {}
++        } message: {
++            Text("使用 Madeira 的 JIT 流程或设备已配置的 StikDebug，确认 JIT 就绪后再开始游戏。")
++        }
++        .alert("需要 Memory+", isPresented: $showMemory) {
++            Button("继续尝试启动") { if let executable { play(executable, arguments) } }
++            Button("返回", role: .cancel) {}
++        } message: {
++            Text("当前签名未授予 Increased Memory Limit，游戏可能因内存不足退出。可以用支持该权限的侧载工具覆盖签名安装。")
++        }
++    }
++}
+diff --git a/app/Madeira/Info.plist b/app/Madeira/Info.plist
+index 15c078a..346d10c 100644
+--- a/app/Madeira/Info.plist
++++ b/app/Madeira/Info.plist
+@@ -16,7 +16,7 @@
+ 	<key>CFBundleDevelopmentRegion</key>
+ 	<string>en</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>Madeira</string>
++	<string>暗黑地牢</string>
+ 	<key>CFBundleDocumentTypes</key>
+ 	<array>
+ 		<dict>
+diff --git a/app/Madeira/Library.swift b/app/Madeira/Library.swift
+index 651c0d2..b734dd8 100644
+--- a/app/Madeira/Library.swift
++++ b/app/Madeira/Library.swift
+@@ -1532,6 +1532,12 @@ final class LibraryModel: ObservableObject {
+     static func relativeToDrive(_ url: URL) -> String? {
+         let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+         if path.hasPrefix(drive.path + "/") { return String(path.dropFirst(drive.path.count + 1)) }
++        if let relative = DarkestPort.relativeGamePath(url) {
++            let mount = drive.appendingPathComponent(DarkestPort.driveName).resolvingSymlinksInPath()
++            if mount.path == DarkestPort.game.resolvingSymlinksInPath().path {
++                return DarkestPort.driveName + "/" + relative
++            }
++        }
+         for root in ExternalDrives.shared.roots {
+             if path == root.path { return "External/" + root.name }
+             if path.hasPrefix(root.path + "/") {
+diff --git a/app/Madeira/LogStore.swift b/app/Madeira/LogStore.swift
+index db4248b..b224c5a 100644
+--- a/app/Madeira/LogStore.swift
++++ b/app/Madeira/LogStore.swift
+@@ -172,9 +172,9 @@ final class LogStore: ObservableObject {
+     /// to a new file, which leaves this name holding the finished run. Keeps
+     /// the newest `keep` runs. A Steam game started through Madeira Dock is
+     /// named by ntdll instead (process_ios.c, madeira_steam_session_log).
+-    func startSessionLog(program: String, keep: Int = 40) {
++    func startSessionLog(program: String, keep: Int = 40, directory: URL? = nil) {
+         let fm = FileManager.default
+-        let dir = logFileURL.deletingLastPathComponent().appendingPathComponent("logs")
++        let dir = directory ?? logFileURL.deletingLastPathComponent().appendingPathComponent("logs")
+         try? fm.createDirectory(atPath: dir.path, withIntermediateDirectories: true, attributes: nil)
+         let stamp = DateFormatter()
+         stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+@@ -187,7 +187,7 @@ final class LogStore: ObservableObject {
+             log("Session log: could not link logs/\(url.lastPathComponent) (\(error.localizedDescription))", level: .error)
+         }
+         let runs = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+-            .filter { $0.pathExtension == "txt" }
++            .filter { $0.pathExtension == "txt" && (directory == nil || $0.lastPathComponent.hasPrefix(String(safe) + "-")) }
+             .sorted {
+                 let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                 let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+diff --git a/tools/build-ipa.sh b/tools/build-ipa.sh
+index 81a36b8..d59623e 100755
+--- a/tools/build-ipa.sh
++++ b/tools/build-ipa.sh
+@@ -52,7 +52,13 @@ log "Building Wine unix libraries"
+ xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1 || true
+ "$ROOT/tools/build/build-shader-headers.sh"
+ "$ROOT/tools/build/build-dxmt-ios.sh"
+-"$ROOT/tools/build/prepare-vcruntime.sh"
++if [[ "${MADEIRA_DARKEST_UNSIGNED:-0}" == 1 ]]; then
++  # Xcode's folder reference must exist. The cloud flavor uses Wine's
++  # builtins and lets the user install any needed MSVC runtime locally.
++  mkdir -p "$ROOT/app/Madeira/x86_64-vcruntime"
++else
++  "$ROOT/tools/build/prepare-vcruntime.sh"
++fi
+ "$ROOT/build/stage-licenses.sh"
+ 
+ log "Building and verifying the bundled runtime components"
+diff --git a/tools/build/package-ipa.sh b/tools/build/package-ipa.sh
+index 65b000c..34126b1 100755
+--- a/tools/build/package-ipa.sh
++++ b/tools/build/package-ipa.sh
+@@ -48,23 +48,32 @@ python3 "$ROOT/tools/build/runtime-components.py" bundle "$APP"
+ # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
+ # replace this ad-hoc signature with the user's development signature while
+ # retaining the supported entitlements.
+-codesign --force --sign - \
+-  --entitlements "$ROOT/app/Madeira/Madeira.entitlements" \
+-  "$APP"
++if [[ "${MADEIRA_DARKEST_UNSIGNED:-0}" != 1 ]]; then
++  codesign --force --sign - \
++    --entitlements "$ROOT/app/Madeira/Madeira.entitlements" \
++    "$APP"
++fi
+ 
+ bundle_required=(
+   "$APP/Madeira"
+   "$APP/prefix-template.tar.gz"
+   "$APP/arm64ec-windows/xtajit64.dll"
+-  "$APP/x86_64-vcruntime/vcruntime140.dll"
+ )
++if [[ "${MADEIRA_DARKEST_UNSIGNED:-0}" == 1 ]]; then
++  bundle_required+=("$APP/gl/libOSMesa.dylib" "$APP/gl/libMoltenVK.dylib")
++  test ! -e "$APP/embedded.mobileprovision"
++else
++  bundle_required+=("$APP/x86_64-vcruntime/vcruntime140.dll")
++fi
+ for path in "${bundle_required[@]}"; do
+   [[ -e "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
+ done
+-codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || {
+-  echo "ERROR: packaged app is missing the allow-jit entitlement" >&2
+-  exit 1
+-}
++if [[ "${MADEIRA_DARKEST_UNSIGNED:-0}" != 1 ]]; then
++  codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || {
++    echo "ERROR: packaged app is missing the allow-jit entitlement" >&2
++    exit 1
++  }
++fi
+ 
+ mkdir -p "$DIST/Payload"
+ ditto "$APP" "$DIST/Payload/Madeira.app"
+diff --git a/tools/build/runtime-components.py b/tools/build/runtime-components.py
+index 579d0cb..6a20d3f 100755
+--- a/tools/build/runtime-components.py
++++ b/tools/build/runtime-components.py
+@@ -269,8 +269,16 @@ def validate_ipa(ipa, sdk):
+             raise ValueError('IPA is missing runtime components')
+         for name in CONTRACT:
+             validate_manifest(name, manifest['components'][name], lambda p: archive.read(prefix + p), sdk)
+-        for path in ['Madeira', 'Madeira.debug.dylib', 'prefix-template.tar.gz',
+-                     'x86_64-vcruntime/vcruntime140.dll', 'i386-windows/ntdll.dll']:
++        required = ['Madeira', 'prefix-template.tar.gz', 'i386-windows/ntdll.dll']
++        if os.environ.get('CONFIGURATION', 'Debug') == 'Debug':
++            required.append('Madeira.debug.dylib')
++        if os.environ.get('MADEIRA_DARKEST_UNSIGNED') == '1':
++            required.extend(['gl/libOSMesa.dylib', 'gl/libMoltenVK.dylib'])
++            if prefix + 'embedded.mobileprovision' in names:
++                raise ValueError('the unsigned flavor must not contain a provisioning profile')
++        else:
++            required.append('x86_64-vcruntime/vcruntime140.dll')
++        for path in required:
+             if not archive.read(prefix + path):
+                 raise ValueError(f'empty app resource: {path}')
+         if archive.testzip():

@@ -1,0 +1,21 @@
+name: Materialize the pinned Madeira source
+description: Apply the reviewed source-only port patch
+inputs:
+  submodules:
+    description: Fetch pinned submodules
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check out and verify the port tree
+      shell: bash
+      run: |
+        cp .github/darkest-madeira-source.patch "$RUNNER_TEMP/darkest-madeira-source.patch"
+        git fetch --depth=1 https://github.com/willfaust/Madeira.git fbad430410b4075192166172447c859714726de9
+        git checkout --detach FETCH_HEAD
+        git apply --index "$RUNNER_TEMP/darkest-madeira-source.patch"
+        [ "$(git write-tree)" = "5db9a4377cdd712a7ce82d692ef0284ad07844b4" ]
+        git -c user.name='Madeira CI' -c user.email='ci@users.noreply.github.com' commit -m 'Materialize verified Darkest Dungeon port'
+        if [ "${{ inputs.submodules }}" = recursive ]; then
+          git submodule update --init --recursive
+        fi
