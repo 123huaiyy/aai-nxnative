@@ -4,6 +4,7 @@
 #include <cwchar>
 #include <string>
 #include <cstdio>
+[[gnu::used]] static auto* const compare_wide = &::wmemcmp;
 int main() {
     constexpr char16_t pattern[] = u"assets/[^/]+\\.(json|xml)";
     const auto wide = std::u16string(pattern);
