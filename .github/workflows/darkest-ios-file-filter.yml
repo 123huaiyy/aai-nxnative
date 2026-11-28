@@ -1,0 +1,19 @@
+name: Check iOS file filter dependencies
+on:
+  push:
+    branches: [build/darkest-ios-file-filter-20261128-042817]
+jobs:
+  sdk:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify the iPhoneOS SDK exports
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          python3 darkest-ios-probe/verify.py "$sdk"
+          xcrun --sdk iphoneos clang++ -isysroot "$sdk" -target arm64-apple-ios18.0 -std=c++20 -dynamiclib \
+            darkest-ios-probe/filter.cpp -o /tmp/DarkestFilter.dylib
+          xcrun vtool -show-build /tmp/DarkestFilter.dylib
+          xcrun --sdk macosx clang++ -std=c++20 darkest-ios-probe/filter.cpp -o /tmp/DarkestFilterTest
+          /tmp/DarkestFilterTest
